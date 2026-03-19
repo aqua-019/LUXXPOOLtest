@@ -31,11 +31,20 @@ class BanningManager extends EventEmitter {
 
     this.db = deps.db;
 
+    // v0.7.0: Enhanced security integrations
+    this.ipReputation = deps.ipReputation || null;
+    this.auditLogger = deps.auditLogger || null;
+
     // In-memory tracking
     this.bannedIps = new Map();     // ip → { reason, expiresAt }
     this.shareTracking = new Map(); // ip → { valid: n, invalid: n, lastReset: timestamp }
     this.connectionRate = new Map(); // ip → [timestamps]
     this.warnings = new Map();      // ip → warning count
+
+    // v0.7.0: Progressive ban tracking
+    this.banHistory = new Map();    // ip → { count, lastBan }
+    // v0.7.0: Subnet ban tracking
+    this.subnetBanCounts = new Map(); // /24 subnet → count of banned IPs
 
     // Cleanup timer
     this.cleanupTimer = null;
@@ -179,7 +188,21 @@ class BanningManager extends EventEmitter {
 
     if (this.bannedIps.has(normalizedIp)) return; // Already banned
 
-    const expiresAt = permanent ? Infinity : Date.now() + (this.banDuration * 1000);
+    // v0.7.0: Progressive ban escalation
+    // 1st ban = configured duration, 2nd = 24h, 3rd+ = permanent
+    const history = this.banHistory.get(normalizedIp) || { count: 0, lastBan: 0 };
+    history.count++;
+    history.lastBan = Date.now();
+    this.banHistory.set(normalizedIp, history);
+
+    let effectiveDuration = this.banDuration;
+    if (history.count >= 3) {
+      permanent = true;
+    } else if (history.count === 2) {
+      effectiveDuration = 86400; // 24 hours
+    }
+
+    const expiresAt = permanent ? Infinity : Date.now() + (effectiveDuration * 1000);
 
     this.bannedIps.set(normalizedIp, {
       reason,
@@ -191,8 +214,22 @@ class BanningManager extends EventEmitter {
     log.info({
       ip: normalizedIp,
       reason,
-      duration: permanent ? 'permanent' : `${this.banDuration}s`,
-    }, '🚫 IP BANNED');
+      banCount: history.count,
+      duration: permanent ? 'permanent' : `${effectiveDuration}s`,
+    }, 'IP BANNED');
+
+    // v0.7.0: Feed IP reputation
+    if (this.ipReputation) {
+      this.ipReputation.recordEvent(normalizedIp, 'ban_triggered');
+    }
+
+    // v0.7.0: Audit log
+    if (this.auditLogger) {
+      this.auditLogger.logBanAction(normalizedIp, reason, permanent ? -1 : effectiveDuration, 'auto');
+    }
+
+    // v0.7.0: Subnet-level banning
+    this._checkSubnetBan(normalizedIp);
 
     // Persist to database
     if (this.db) {
@@ -342,6 +379,45 @@ class BanningManager extends EventEmitter {
     if (removed > 0) {
       log.debug({ removed }, 'Expired bans cleaned up');
     }
+  }
+
+  /**
+   * v0.7.0: Check if a /24 subnet should be banned.
+   * If 5+ IPs from the same /24 are banned, ban the entire subnet.
+   */
+  _checkSubnetBan(ip) {
+    const subnet = this._getSubnet(ip);
+    if (!subnet) return;
+
+    const count = (this.subnetBanCounts.get(subnet) || 0) + 1;
+    this.subnetBanCounts.set(subnet, count);
+
+    if (count >= 5) {
+      log.warn({ subnet, bannedIPs: count }, 'Subnet ban threshold reached');
+
+      // Ban all IPs in the subnet range (mark as subnet ban)
+      if (this.auditLogger) {
+        this.auditLogger.logSecurityEvent('subnet_ban', 'high', {
+          ip: subnet,
+          details: { subnet, bannedIPs: count },
+        });
+      }
+
+      // Note: Actual subnet blocking is handled at nginx/firewall level.
+      // This emits an event for the admin dashboard to act on.
+      this.emit('subnetBan', subnet, count);
+    }
+  }
+
+  /**
+   * Extract /24 subnet from an IPv4 address.
+   * @param {string} ip
+   * @returns {string|null} e.g. "192.168.1.0/24"
+   */
+  _getSubnet(ip) {
+    const parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
   }
 }
 

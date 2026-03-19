@@ -48,6 +48,17 @@ class StratumClient extends EventEmitter {
     this.lastActivity = Date.now();
     this.hashrate = 0;
 
+    // v0.7.0: Miner model detection
+    this.userAgent = null;
+    this.minerModel = null;       // detected model key (e.g. 'antminer-l9')
+    this.minerModelName = null;   // human name (e.g. 'Antminer L9')
+    this.firmwareVersion = null;
+    this.modelProfile = null;     // full profile from MinerRegistry
+
+    // v0.7.0: Rate limiting
+    this._messageTimestamps = [];
+    this._maxMessagesPerSec = 20;
+
     // VarDiff
     this.vardiff = new VarDiffManager(config.vardiff);
 
@@ -113,6 +124,17 @@ class StratumClient extends EventEmitter {
   _handleMessage(msg) {
     if (!msg.id && !msg.method) return;
 
+    // v0.7.0: Per-client message rate limiting
+    const now = Date.now();
+    this._messageTimestamps.push(now);
+    const oneSecAgo = now - 1000;
+    this._messageTimestamps = this._messageTimestamps.filter(t => t > oneSecAgo);
+    if (this._messageTimestamps.length > this._maxMessagesPerSec) {
+      log.warn({ ip: this.remoteAddress, rate: this._messageTimestamps.length }, 'Message rate limit exceeded');
+      this.emit('rateLimitExceeded', this);
+      return;
+    }
+
     switch (msg.method) {
       case 'mining.subscribe':
         this._handleSubscribe(msg);
@@ -145,6 +167,7 @@ class StratumClient extends EventEmitter {
    */
   _handleSubscribe(msg) {
     const userAgent = msg.params ? msg.params[0] : 'unknown';
+    this.userAgent = userAgent;
     log.info({ ip: this.remoteAddress, agent: userAgent }, 'Miner subscribing');
 
     const subscriptions = [
@@ -286,6 +309,15 @@ class StratumClient extends EventEmitter {
   }
 
   /**
+   * v0.7.0: Send client.show_message — Stratum v1 extension for notifications.
+   * Used to notify miners of firmware updates, pool announcements, etc.
+   * @param {string} text - Message text
+   */
+  showMessage(text) {
+    this._sendNotification('client.show_message', [text]);
+  }
+
+  /**
    * Disconnect the client
    */
   disconnect(reason) {
@@ -333,6 +365,8 @@ class StratumClient extends EventEmitter {
       difficulty: this.difficulty,
       shares: this.shares,
       hashrate: this.hashrate,
+      minerModel: this.minerModelName,
+      firmwareVersion: this.firmwareVersion,
       connectedAt: this.connectedAt,
       lastActivity: this.lastActivity,
       uptime: Date.now() - this.connectedAt,

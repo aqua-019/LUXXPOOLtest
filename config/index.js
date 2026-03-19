@@ -100,6 +100,18 @@ const config = {
     sslCert:             process.env.SSL_CERT_PATH,
     sslKey:              process.env.SSL_KEY_PATH,
   },
+
+  // v0.7.0: WebSocket real-time data push
+  websocket: {
+    enabled:       process.env.WS_ENABLED === 'true',
+    pingInterval:  parseInt(process.env.WS_PING_INTERVAL || '30000'),
+    maxConnections: parseInt(process.env.WS_MAX_CONNECTIONS || '100'),
+  },
+
+  // v0.7.0: Dashboard connectivity
+  dashboard: {
+    corsOrigins: process.env.DASHBOARD_CORS_ORIGINS || '',  // Comma-separated extra CORS origins
+  },
 };
 
 /**

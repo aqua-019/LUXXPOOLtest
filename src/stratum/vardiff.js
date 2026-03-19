@@ -18,9 +18,25 @@ class VarDiffManager {
     this.targetTime   = config.targetTime || 15;
     this.retargetTime = config.retargetTime || 90;
 
+    // v0.7.0: Model-aware initial difficulty
+    // When a miner model is known, start at its optimal difficulty
+    // to reduce VarDiff convergence time from ~5 retargets to ~1.
+    this.initialDiff  = config.initialDiff || null;
+
     this.shareTimes = [];
     this.lastRetarget = Date.now();
     this.lastShareTime = null;
+  }
+
+  /**
+   * v0.7.0: Set initial difficulty from miner profile.
+   * Called after model detection during mining.subscribe.
+   * @param {number} diff - Optimal difficulty for detected miner model
+   */
+  setInitialDifficulty(diff) {
+    if (diff && diff >= this.minDiff && diff <= this.maxDiff) {
+      this.initialDiff = diff;
+    }
   }
 
   /**

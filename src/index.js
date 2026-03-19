@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  LUXXPOOL v0.4.0 — Scrypt Multi-Coin Merged Mining Pool
+ *  LUXXPOOL v0.7.0 — Scrypt Multi-Coin Merged Mining Pool
  *  Main Process — Full System Orchestrator
  *
  *  ALL SYSTEMS WIRED:
@@ -8,16 +8,20 @@
  *    → ShareProcessor → HashrateEstimator → BlockTemplateManager
  *    → AuxPowEngine → BlockWatcher → PaymentProcessors → API
  *
- *  v0.4.0 Fixes:
- *    - SecurityManager WIRED (was dead code in v0.3.x)
- *    - Mining cookies generated on every connection
- *    - Share fingerprinting active on every share
- *    - Behavioral anomaly engine active on every share
- *    - Security auto-ban escalation connected
- *    - Redis-backed share deduplication
- *    - HashrateEstimator wired to stratum client objects
- *    - Security API routes mounted
- *    - Graceful degradation for Redis/DB failures
+ *  v0.7.0 Features:
+ *    - Miner model detection from user-agent (Antminer, ElphaPex, VOLCMINER, Goldshell)
+ *    - Firmware version tracking with Stratum client.show_message notifications
+ *    - Model-aware VarDiff (optimal initial difficulty per miner model)
+ *    - Hashrate optimization engine (per-model efficiency analysis)
+ *    - WebSocket real-time data push for dashboards
+ *    - Dashboard-specific aggregation API endpoints
+ *    - IP reputation scoring system (0-100 behavioral score)
+ *    - Connection fingerprinting (botnet/cluster detection)
+ *    - Emergency lockdown system (4-level graduated response)
+ *    - Progressive ban escalation (1h → 24h → permanent)
+ *    - Subnet-level banning for coordinated attacks
+ *    - Forensic audit logging
+ *    - Per-client Stratum message rate limiting
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -38,6 +42,14 @@ const ShareProcessor        = require('./pool/shareProcessor');
 const BanningManager        = require('./pool/banningManager');
 const { SecurityManager }   = require('./pool/securityManager');
 const FleetManager          = require('./pool/fleetManager');
+const MinerRegistry         = require('./pool/minerRegistry');
+const FirmwareTracker       = require('./pool/firmwareTracker');
+const HashrateOptimizer     = require('./pool/hashrateOptimizer');
+const IPReputationManager   = require('./pool/ipReputation');
+const ConnectionFingerprinter = require('./pool/connectionFingerprint');
+const EmergencyLockdown     = require('./pool/emergencyLockdown');
+const AuditLogger           = require('./pool/auditLog');
+const PoolWebSocket         = require('./api/websocket');
 const PaymentProcessor      = require('./payment/paymentProcessor');
 const MultiCoinPaymentProcessor = require('./payment/multiCoinPayment');
 const { createApiServer }   = require('./api/server');
@@ -223,11 +235,11 @@ async function main() {
     invalidPercent: config.stratum.banning.invalidPercent,
     banDuration: config.security.banDuration,
     maxConnectionsPerIp: config.security.maxConnectionsPerIp,
-  }, { db: dbQuery });
+  }, { db: dbQuery, ipReputation, auditLogger });
   banningManager.start();
 
   // ═══════════════════════════════════════════════════════
-  // SECURITY ENGINE — v0.4.0 WIRED
+  // SECURITY ENGINE — v0.4.0 WIRED + v0.7.0 ENHANCED
   // ═══════════════════════════════════════════════════════
   const securityManager = new SecurityManager(
     {
@@ -242,11 +254,21 @@ async function main() {
         hashrateVarianceThreshold: 5.0,
       },
     },
-    { db: dbQuery, banningManager }
+    { db: dbQuery, banningManager, ipReputation, auditLogger, emergencyLockdown }
   );
   securityManager.start();
 
-  log.info('🛡️  Security engine ACTIVE — all 3 layers wired');
+  // v0.7.0: Wire lockdown events to audit log
+  emergencyLockdown.on('levelChanged', ({ previous, current, reason, changedBy }) => {
+    auditLogger.logLockdownChange(previous, current, reason, changedBy);
+  });
+
+  // v0.7.0: Wire ban events to lockdown metrics
+  banningManager.on('banned', () => {
+    emergencyLockdown.recordThreatMetric('ban');
+  });
+
+  log.info('Security engine ACTIVE — 3 layers + IP reputation + lockdown + audit');
 
   // ═══════════════════════════════════════════════════════
   // FLEET MANAGEMENT — v0.5.1
@@ -264,6 +286,31 @@ async function main() {
     fleetAddresses: (process.env.FLEET_ADDRESSES || '').split(',').filter(Boolean).length,
     fleetFee: parseFloat(process.env.FLEET_FEE || '0') * 100 + '%',
   }, '🏗  Fleet manager initialized');
+
+  // ═══════════════════════════════════════════════════════
+  // v0.7.0: MINER MODEL DETECTION & FIRMWARE TRACKING
+  // ═══════════════════════════════════════════════════════
+  const minerRegistry = new MinerRegistry();
+  const firmwareTracker = new FirmwareTracker(dbQuery, minerRegistry);
+  firmwareTracker.start();
+  log.info('Miner registry + firmware tracker started');
+
+  // ═══════════════════════════════════════════════════════
+  // v0.7.0: SECURITY HARDENING
+  // ═══════════════════════════════════════════════════════
+  const ipReputation = new IPReputationManager(dbQuery, redis);
+  await ipReputation.loadFromDB();
+  ipReputation.start();
+
+  const connectionFingerprinter = new ConnectionFingerprinter();
+  connectionFingerprinter.start();
+
+  const emergencyLockdown = new EmergencyLockdown();
+  emergencyLockdown.start();
+
+  const auditLogger = new AuditLogger(dbQuery);
+
+  log.info('v0.7.0 security systems started (IP reputation, fingerprinting, lockdown, audit)');
 
   // ─── Stratum Servers ────────────────────────────────────
   const stratumServer = new StratumServer(
@@ -315,6 +362,25 @@ async function main() {
 
     if (!isFleet) {
       // PUBLIC: full security checks
+
+      // v0.7.0: Check lockdown level
+      if (emergencyLockdown) {
+        const lockCheck = emergencyLockdown.shouldAcceptConnection(
+          client.remoteAddress, false, ipReputation.isTrusted(client.remoteAddress)
+        );
+        if (!lockCheck.allowed) {
+          client.showMessage(lockCheck.reason);
+          client.disconnect('lockdown');
+          return;
+        }
+      }
+
+      // v0.7.0: Check IP reputation
+      if (ipReputation.shouldReject(client.remoteAddress)) {
+        client.disconnect('low reputation');
+        return;
+      }
+
       if (banningManager.isBanned(client.remoteAddress)) {
         client.disconnect('banned');
         return;
@@ -326,11 +392,46 @@ async function main() {
     }
     // FLEET: skip ban check and connection limits entirely
 
+    // v0.7.0: Connection fingerprinting
+    connectionFingerprinter.onConnect(client.id, client.socket, client.remoteAddress);
+
     const cookie = securityManager.generateCookie(client.id, client.extraNonce1);
     client._miningCookie = cookie;
     client._isFleet = isFleet;
 
-    log.debug({ ip: client.remoteAddress, agent, fleet: isFleet }, 'Miner subscribed');
+    // v0.7.0: Miner model detection from user-agent
+    const { parsed, recommendation } = firmwareTracker.onMinerConnect(
+      client.id, agent, null, null // address not known yet (set on authorize)
+    );
+
+    if (parsed.modelKey) {
+      client.minerModel = parsed.modelKey;
+      client.minerModelName = parsed.model;
+      client.firmwareVersion = parsed.firmware;
+      client.modelProfile = minerRegistry.getProfile(parsed.modelKey);
+
+      // Set optimal initial difficulty for detected model
+      const optimalDiff = minerRegistry.getOptimalDifficulty(parsed.modelKey, config.stratum.difficulty);
+      if (optimalDiff !== client.difficulty) {
+        client.difficulty = optimalDiff;
+        client.sendDifficulty(optimalDiff);
+        client.vardiff.setInitialDifficulty(optimalDiff);
+      }
+    }
+
+    // v0.7.0: Firmware update notification via Stratum
+    if (recommendation && recommendation.available) {
+      const msg = firmwareTracker.buildUpdateMessage(parsed.modelKey, parsed.firmware);
+      if (msg) client.showMessage(msg);
+    }
+
+    log.debug({
+      ip: client.remoteAddress,
+      agent,
+      fleet: isFleet,
+      model: parsed.model,
+      firmware: parsed.firmware,
+    }, 'Miner subscribed');
   });
 
   // Register miners on authorize (now we know their address)
@@ -339,6 +440,13 @@ async function main() {
     client._isFleet = type === 'fleet';
     fleetManager.registerMiner(client);
     workerTracker.onConnect(client, client.userAgent || 'unknown');
+
+    // v0.7.0: Update firmware tracker with address (not available at subscribe time)
+    const entry = firmwareTracker.getMinerInfo(client.id);
+    if (entry) {
+      entry.address = client.minerAddress;
+      entry.workerName = client.workerName;
+    }
   });
 
   // Solo mining connections
@@ -425,6 +533,8 @@ async function main() {
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
       securityManager.anomalyEngine.analyzeShare(client, { ...share, _invalid: true });
+      // v0.7.0: Feed security systems
+      securityManager.recordInvalidShare(client);
     }
   });
 
@@ -467,6 +577,9 @@ async function main() {
     securityManager.cookieManager.remove(client.id);
     fleetManager.removeMiner(client.id);
     workerTracker.onDisconnect(client);
+    // v0.7.0: Cleanup
+    firmwareTracker.onMinerDisconnect(client.id);
+    connectionFingerprinter.onDisconnect(client.id);
   }
 
   stratumServer.on('disconnect', handleDisconnect);
@@ -521,18 +634,67 @@ async function main() {
     }
   }
 
-  // ─── API Server (with security routes) ──────────────────
+  // ═══════════════════════════════════════════════════════
+  // v0.7.0: HASHRATE OPTIMIZER
+  // ═══════════════════════════════════════════════════════
+  const hashrateOptimizer = new HashrateOptimizer(
+    hashrateEstimator, minerRegistry, workerTracker, dbQuery
+  );
+  hashrateOptimizer.start();
+  log.info('Hashrate optimizer started');
+
+  // ─── API Server (with security + dashboard routes) ────
   const apiApp = createApiServer({
     db: dbQuery, redis, redisKeys, stratumServer, soloServer,
     rpcClient: ltcRpc, auxRpcClients, auxPowEngine,
     hashrateEstimator, banningManager, blockWatcher,
     securityManager, fleetManager,
     workerTracker, healthMonitor,
+    // v0.7.0 deps
+    minerRegistry, firmwareTracker, hashrateOptimizer,
+    ipReputation, emergencyLockdown, auditLogger,
+    connectionFingerprinter,
   });
 
-  apiApp.listen(config.api.port, config.api.host, () => {
-    log.info({ port: config.api.port }, '🌐 API server listening');
+  const httpServer = apiApp.listen(config.api.port, config.api.host, () => {
+    log.info({ port: config.api.port }, 'API server listening');
   });
+
+  // ═══════════════════════════════════════════════════════
+  // v0.7.0: WEBSOCKET SERVER
+  // ═══════════════════════════════════════════════════════
+  let poolWebSocket = null;
+  if (config.websocket.enabled) {
+    poolWebSocket = new PoolWebSocket(httpServer, {
+      stratumServer,
+      hashrateEstimator,
+      securityManager,
+      adminToken: config.api.adminToken,
+    });
+    poolWebSocket.start();
+    log.info('WebSocket server started on /ws');
+
+    // Wire block events to WebSocket broadcast
+    shareProcessor.on('blockFound', (template, client) => {
+      poolWebSocket.broadcastNewBlock({
+        coin: 'LTC',
+        height: template.height,
+        hash: template.hash,
+        reward: template.coinbasevalue,
+        worker: client.workerName,
+      });
+    });
+
+    // Wire security events to WebSocket broadcast
+    securityManager.on('alert', (alert) => {
+      poolWebSocket.broadcastSecurityEvent(alert);
+    });
+
+    // Wire lockdown changes to WebSocket broadcast
+    emergencyLockdown.on('levelChanged', (data) => {
+      poolWebSocket.broadcastLockdownChange(data);
+    });
+  }
 
   // ─── Stats Collector ────────────────────────────────────
   const statsCollector = new StatsCollector({
@@ -543,6 +705,14 @@ async function main() {
   // ─── Graceful Shutdown ──────────────────────────────────
   const shutdown = async (signal) => {
     log.info({ signal }, 'Shutting down LUXXPOOL...');
+    // v0.7.0 systems
+    if (poolWebSocket) poolWebSocket.stop();
+    hashrateOptimizer.stop();
+    firmwareTracker.stop();
+    ipReputation.stop();
+    connectionFingerprinter.stop();
+    emergencyLockdown.stop();
+    // Core systems
     statsCollector.stop();
     hashrateEstimator.stop();
     workerTracker.stop();
@@ -586,9 +756,11 @@ async function main() {
   Pool Fee: ${config.pool.fee * 100}%  │  Solo: ${(parseFloat(process.env.SOLO_FEE || '0.01')) * 100}%
   Fleet Fee: ${fleetManager.fleetFee * 100}%  │  Scheme: ${config.payment.scheme.toUpperCase()}
   ─────────────────────────────────────────────────────
-  Fleet:          🏗  ${(process.env.FLEET_IPS || '').split(',').filter(Boolean).length} IPs whitelisted
-  Security:       🛡️  3-Layer (public miners only)
-  Redis:          ${redisConnected ? '✅' : '⚠️  degraded'}
+  Fleet:          ${(process.env.FLEET_IPS || '').split(',').filter(Boolean).length} IPs whitelisted
+  Security:       3-Layer + IP Reputation + Lockdown + Audit
+  Miner Detection: ${Object.keys(minerRegistry.profiles).length} models in registry
+  WebSocket:      ${config.websocket.enabled ? 'enabled on /ws' : 'disabled (set WS_ENABLED=true)'}
+  Redis:          ${redisConnected ? 'connected' : 'degraded'}
   ═══════════════════════════════════════════════════════
   `);
 }

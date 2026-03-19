@@ -141,6 +141,44 @@ class HashrateEstimator {
     this.cachedRates.delete(workerId);
   }
 
+  /**
+   * v0.7.0: Get worker efficiency compared to expected hashrate.
+   * @param {string} workerId
+   * @param {number} expectedHashrate - Expected H/s from miner profile
+   * @returns {{ actual, expected, efficiency }}
+   */
+  getWorkerEfficiency(workerId, expectedHashrate) {
+    const actual = this.getWorkerHashrate(workerId);
+    if (!expectedHashrate || expectedHashrate <= 0) {
+      return { actual, expected: 0, efficiency: null };
+    }
+    return {
+      actual,
+      expected: expectedHashrate,
+      efficiency: Math.round((actual / expectedHashrate) * 100) / 100,
+    };
+  }
+
+  /**
+   * v0.7.0: Get pool-wide efficiency metrics.
+   * Requires worker model data to be set on share records.
+   * @returns {{ totalActual, workerCount }}
+   */
+  getPoolEfficiencyMetrics() {
+    let totalActual = 0;
+    let workerCount = 0;
+
+    for (const [workerId] of this.shareRecords) {
+      const hr = this.getWorkerHashrate(workerId);
+      if (hr > 0) {
+        totalActual += hr;
+        workerCount++;
+      }
+    }
+
+    return { totalActual, workerCount };
+  }
+
   // ═══════════════════════════════════════════════════════
   // INTERNAL
   // ═══════════════════════════════════════════════════════

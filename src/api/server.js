@@ -13,6 +13,7 @@ const { registerExtendedRoutes } = require('./routes/extended');
 const { registerSecurityRoutes } = require('./routes/security');
 const { registerPoolRoutes } = require('./routes/pool');
 const { registerFleetRoutes } = require('./routes/fleet');
+const { registerDashboardRoutes } = require('./routes/dashboard');
 const { API } = require('../ux/copy');
 const config = require('../../config');
 
@@ -274,6 +275,9 @@ function createApiServer(deps) {
 
   // ── Fleet Management Routes (v0.5.1) ──
   registerFleetRoutes(app, deps);
+
+  // ── Dashboard & Admin Routes (v0.7.0) ──
+  registerDashboardRoutes(app, deps);
 
   // ── 404 ──
   app.use((req, res) => {

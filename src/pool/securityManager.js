@@ -458,6 +458,11 @@ class SecurityManager extends EventEmitter {
     this.banningManager = deps.banningManager;
     this.db = deps.db;
 
+    // v0.7.0: Enhanced security integrations
+    this.ipReputation = deps.ipReputation || null;
+    this.auditLogger = deps.auditLogger || null;
+    this.emergencyLockdown = deps.emergencyLockdown || null;
+
     // Auto-ban escalation
     this.anomalyEngine.on('alert', (alert) => {
       this._handleAlert(alert);
@@ -484,13 +489,15 @@ class SecurityManager extends EventEmitter {
   }
 
   /**
-   * Process a share through all security layers
+   * Process a share through all security layers.
+   * v0.7.0: Now feeds IP reputation and lockdown threat metrics.
    */
   processShare(client, share, isBlock = false) {
     // Layer 2: Record for fingerprinting
     this.fingerprintEngine.recordShare(client.minerAddress, share.difficulty, isBlock);
 
     // Layer 3: Behavioral analysis
+    // v0.7.0: Apply adaptive thresholds during lockdown
     const anomalies = this.anomalyEngine.analyzeShare(client, share);
 
     // Layer 2: Periodic timing check
@@ -501,7 +508,42 @@ class SecurityManager extends EventEmitter {
       }
     }
 
+    // v0.7.0: Feed IP reputation based on share validity
+    if (this.ipReputation && client.remoteAddress) {
+      this.ipReputation.recordEvent(client.remoteAddress, 'valid_share');
+    }
+
+    // v0.7.0: Feed lockdown threat metrics
+    if (this.emergencyLockdown) {
+      this.emergencyLockdown.recordThreatMetric('valid_share');
+    }
+
     return anomalies;
+  }
+
+  /**
+   * v0.7.0: Record an invalid share for reputation tracking.
+   * Called by the share processor when a share fails validation.
+   */
+  recordInvalidShare(client) {
+    if (this.ipReputation && client.remoteAddress) {
+      this.ipReputation.recordEvent(client.remoteAddress, 'invalid_share');
+    }
+    if (this.emergencyLockdown) {
+      this.emergencyLockdown.recordThreatMetric('invalid_share');
+    }
+  }
+
+  /**
+   * v0.7.0: Get the adaptive threshold multiplier.
+   * During lockdown, security thresholds are tightened.
+   * @returns {number} 1.0 = normal, lower = stricter
+   */
+  getThresholdMultiplier() {
+    if (this.emergencyLockdown) {
+      return this.emergencyLockdown.getThresholdMultiplier();
+    }
+    return 1.0;
   }
 
   /**
@@ -522,6 +564,33 @@ class SecurityManager extends EventEmitter {
       ).catch(() => {});
     }
 
+    // v0.7.0: Feed IP reputation
+    if (this.ipReputation && alert.ip) {
+      const eventMap = {
+        share_flooding: 'share_flooding',
+        ntime_manipulation: 'ntime_manipulation',
+        vardiff_gaming: 'vardiff_gaming',
+        sybil_detection: 'sybil_detected',
+        hashrate_oscillation: 'connection_flood',
+      };
+      const repEvent = eventMap[alert.type] || 'protocol_violation';
+      this.ipReputation.recordEvent(alert.ip, repEvent, alert.severity.toLowerCase());
+    }
+
+    // v0.7.0: Feed lockdown metrics
+    if (this.emergencyLockdown) {
+      this.emergencyLockdown.recordThreatMetric('security_event');
+    }
+
+    // v0.7.0: Audit log
+    if (this.auditLogger) {
+      this.auditLogger.logSecurityEvent(alert.type, alert.severity.toLowerCase(), {
+        ip: alert.ip,
+        address: alert.address,
+        details: alert,
+      });
+    }
+
     this.emit('alert', alert);
   }
 
@@ -536,7 +605,7 @@ class SecurityManager extends EventEmitter {
    * Get security dashboard data
    */
   getDashboard() {
-    return {
+    const dashboard = {
       layer1: {
         name: 'Mining Cookies',
         activeCookies: this.cookieManager.cookies.size,
@@ -551,6 +620,16 @@ class SecurityManager extends EventEmitter {
         trackedIps: this.anomalyEngine.profiles.size,
       },
     };
+
+    // v0.7.0: Extended security dashboard
+    if (this.emergencyLockdown) {
+      dashboard.lockdown = this.emergencyLockdown.getStatus();
+    }
+    if (this.ipReputation) {
+      dashboard.highRiskIPs = this.ipReputation.getHighRiskIPs().length;
+    }
+
+    return dashboard;
   }
 }
 
