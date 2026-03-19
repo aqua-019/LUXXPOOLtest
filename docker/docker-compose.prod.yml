@@ -1,0 +1,186 @@
+# ═══════════════════════════════════════════════════════════
+# LUXXPOOL v0.6.0 — Production Docker Compose
+# Usage: docker compose -f docker/docker-compose.prod.yml up -d
+# ═══════════════════════════════════════════════════════════
+
+services:
+  luxxpool:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: luxxpool-pool
+    restart: always
+    ports:
+      - "3333:3333"
+      - "3334:3334"
+      - "3336:3336"
+      - "127.0.0.1:8080:8080"   # API only on localhost (Nginx fronts it)
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "2.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    volumes:
+      - pool-logs:/var/log/luxxpool
+      # Mount SSL certs if using stratum+ssl
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - luxxpool-net
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: luxxpool-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: luxxpool
+      POSTGRES_USER: luxxpool
+      POSTGRES_PASSWORD: ${PG_PASS}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "127.0.0.1:5432:5432"   # Only localhost
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luxxpool"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - luxxpool-net
+    shm_size: 256m
+
+  redis:
+    image: redis:7-alpine
+    container_name: luxxpool-redis
+    restart: always
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --appendonly yes
+      --appendfsync everysec
+      --tcp-backlog 511
+      --timeout 300
+    ports:
+      - "127.0.0.1:6379:6379"   # Only localhost
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - luxxpool-net
+
+  # ── Litecoin Core ─────────────────────────────────────
+  # Only use this if you don't already have a local daemon
+  litecoind:
+    image: uphold/litecoin-core:latest
+    container_name: luxxpool-litecoind
+    restart: always
+    command: >
+      -server=1
+      -txindex=1
+      -rpcuser=luxxpool_rpc
+      -rpcpassword=${LTC_PASS}
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -rpcport=9332
+      -zmqpubhashblock=tcp://0.0.0.0:28332
+      -maxconnections=64
+      -dbcache=1024
+    ports:
+      - "127.0.0.1:9332:9332"
+      - "127.0.0.1:28332:28332"
+    volumes:
+      - ltc-data:/home/litecoin/.litecoin
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "litecoin-cli", "-rpcuser=luxxpool_rpc", "-rpcpassword=${LTC_PASS}", "getblockcount"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      - luxxpool-net
+
+volumes:
+  pg-data:
+    driver: local
+  redis-data:
+    driver: local
+  pool-logs:
+    driver: local
+  ltc-data:
+    driver: local
+
+networks:
+  luxxpool-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

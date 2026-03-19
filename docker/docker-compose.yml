@@ -1,0 +1,248 @@
+# ═══════════════════════════════════════════════════════════
+# LUXXPOOL — Docker Compose Stack
+# Scrypt Multi-Coin Merged Mining Pool
+# LTC (parent) + DOGE + BELLS + LKY + PEP + JKC +
+#                DINGO + SHIC + TRMP + CRC (auxiliary)
+# ═══════════════════════════════════════════════════════════
+
+version: '3.9'
+
+services:
+  # ── Pool Application ──────────────────────────────────
+  luxxpool:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: luxxpool-pool
+    restart: unless-stopped
+    ports:
+      - "3333:3333"     # Stratum (pool mining)
+      - "3334:3334"     # Stratum SSL
+      - "3336:3336"     # Solo mining
+      - "8080:8080"     # REST API
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - pool-logs:/var/log/luxxpool
+    networks:
+      - luxxpool-net
+
+  # ── PostgreSQL ────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: luxxpool-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: luxxpool
+      POSTGRES_USER: luxxpool
+      POSTGRES_PASSWORD: ${PG_PASS:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luxxpool"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - luxxpool-net
+
+  # ── Redis ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: luxxpool-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - luxxpool-net
+
+  # ═══════════════════════════════════════════════════════
+  # PARENT CHAIN: Litecoin
+  # ═══════════════════════════════════════════════════════
+
+  litecoind:
+    image: uphold/litecoin-core:latest
+    container_name: luxxpool-litecoind
+    restart: unless-stopped
+    command: >
+      -server=1
+      -rpcuser=${LTC_USER:-luxxpool_rpc}
+      -rpcpassword=${LTC_PASS:-changeme}
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -rpcport=9332
+      -txindex=1
+      -zmqpubhashblock=tcp://0.0.0.0:28332
+      -zmqpubhashtx=tcp://0.0.0.0:28333
+    ports:
+      - "9332:9332"
+      - "9333:9333"
+      - "28332:28332"
+    volumes:
+      - ltc-data:/home/litecoin/.litecoin
+    networks:
+      - luxxpool-net
+
+  # ═══════════════════════════════════════════════════════
+  # AUXILIARY CHAINS (AuxPoW merged mining)
+  # Uncomment each chain as you deploy its daemon.
+  # ═══════════════════════════════════════════════════════
+
+  # ── Dogecoin ──
+  dogecoind:
+    image: dogecoinfoundation/dogecoin:latest
+    container_name: luxxpool-dogecoind
+    restart: unless-stopped
+    command: >
+      -server=1
+      -rpcuser=${DOGE_USER:-luxxpool_rpc}
+      -rpcpassword=${DOGE_PASS:-changeme}
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -rpcport=22555
+      -txindex=1
+    ports:
+      - "22555:22555"
+      - "22556:22556"
+    volumes:
+      - doge-data:/root/.dogecoin
+    networks:
+      - luxxpool-net
+    profiles: ["doge"]
+
+  # ── Bellscoin ──
+  # bellsd:
+  #   image: bellscoin/bells-core:latest
+  #   container_name: luxxpool-bellsd
+  #   restart: unless-stopped
+  #   command: >
+  #     -server=1
+  #     -rpcuser=${BELLS_USER:-luxxpool_rpc}
+  #     -rpcpassword=${BELLS_PASS:-changeme}
+  #     -rpcallowip=0.0.0.0/0
+  #     -rpcbind=0.0.0.0
+  #     -rpcport=19918
+  #   ports:
+  #     - "19918:19918"
+  #   volumes:
+  #     - bells-data:/root/.bells
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["bells"]
+
+  # ── Luckycoin ──
+  # luckycoind:
+  #   container_name: luxxpool-luckycoind
+  #   build: ./daemons/luckycoin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9917:9917"
+  #   volumes:
+  #     - lky-data:/root/.luckycoin
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["lky"]
+
+  # ── Pepecoin ──
+  # pepecoind:
+  #   container_name: luxxpool-pepecoind
+  #   build: ./daemons/pepecoin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "33874:33874"
+  #   volumes:
+  #     - pep-data:/root/.pepecoin
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["pep"]
+
+  # ── Junkcoin ──
+  # junkcoind:
+  #   container_name: luxxpool-junkcoind
+  #   build: ./daemons/junkcoin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9771:9771"
+  #   volumes:
+  #     - jkc-data:/root/.junkcoin
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["jkc"]
+
+  # ── Dingocoin ──
+  # dingocoind:
+  #   container_name: luxxpool-dingocoind
+  #   build: ./daemons/dingocoin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "34646:34646"
+  #   volumes:
+  #     - dingo-data:/root/.dingocoin
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["dingo"]
+
+  # ── Shibacoin ──
+  # shibacoind:
+  #   container_name: luxxpool-shibacoind
+  #   build: ./daemons/shibacoin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "22888:22888"
+  #   volumes:
+  #     - shic-data:/root/.shibacoin
+  #   networks:
+  #     - luxxpool-net
+  #   profiles: ["shic"]
+
+  # ═══════════════════════════════════════════════════════
+  # MONITORING (optional)
+  # ═══════════════════════════════════════════════════════
+
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: luxxpool-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ssl-certs:/etc/ssl/certs
+  #   depends_on:
+  #     - luxxpool
+  #   networks:
+  #     - luxxpool-net
+
+volumes:
+  pg-data:
+  redis-data:
+  ltc-data:
+  doge-data:
+  # bells-data:
+  # lky-data:
+  # pep-data:
+  # jkc-data:
+  # dingo-data:
+  # shic-data:
+  # ssl-certs:
+  pool-logs:
+
+networks:
+  luxxpool-net:
+    driver: bridge
