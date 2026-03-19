@@ -292,8 +292,11 @@ class ShareProcessor extends EventEmitter {
     }
   }
 
-  async _recordBlock(template, client) {
+  async _recordBlock(template, client, header) {
     if (!this.db) return;
+
+    // Compute the actual block hash from the 80-byte header
+    const blockHash = reverseBuffer(sha256d(header)).toString('hex');
 
     try {
       await this.db.query(
@@ -301,7 +304,7 @@ class ShareProcessor extends EventEmitter {
          VALUES ($1, $2, $3, $4, $5, $6, false, NOW())`,
         [
           template.height,
-          template.previousblockhash, // will be updated with actual hash
+          blockHash,
           template.coinbasevalue,
           client.workerName,
           client.minerAddress,
