@@ -46,7 +46,7 @@ class StatsCollector {
         networkDiff = miningInfo.difficulty;
         networkHashrate = miningInfo.networkhashps;
         blockHeight = miningInfo.blocks;
-      } catch {}
+      } catch (err) { log.debug({ err: err.message }, 'Mining info RPC failed'); }
 
       // Pool stats snapshot
       await this.db.query(

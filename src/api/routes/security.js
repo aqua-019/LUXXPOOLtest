@@ -4,19 +4,31 @@ const { API } = require('../../ux/copy');
  */
 
 const { createLogger } = require('../../utils/logger');
+const config = require('../../../config');
 const log = createLogger('api:security');
+
+function requireAdminAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!config.api.adminToken) {
+    return res.status(503).json({ error: 'Admin token not configured' });
+  }
+  if (token !== config.api.adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
 
 function registerSecurityRoutes(app, deps) {
   const { securityManager, db } = deps;
 
   // Security dashboard overview
-  app.get('/api/v1/security/status', (req, res) => {
+  app.get('/api/v1/security/status', requireAdminAuth, (req, res) => {
     if (!securityManager) return res.json({ status: 'disabled' });
     res.json(securityManager.getDashboard());
   });
 
   // Recent security events
-  app.get('/api/v1/security/events', async (req, res) => {
+  app.get('/api/v1/security/events', requireAdminAuth, async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '50'), 200);
     const severity = req.query.severity;
 
@@ -41,7 +53,7 @@ function registerSecurityRoutes(app, deps) {
   });
 
   // Miner suspicion score
-  app.get('/api/v1/security/miner/:address', (req, res) => {
+  app.get('/api/v1/security/miner/:address', requireAdminAuth, (req, res) => {
     if (!securityManager) return res.json({ status: 'disabled' });
 
     const stats = securityManager.fingerprintEngine.getStats(req.params.address);

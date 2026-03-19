@@ -236,7 +236,7 @@ class MultiCoinPaymentProcessor extends EventEmitter {
     const key = `balance:${symbol}:${minerAddress}`;
     try {
       await this.redis.incrbyfloat(key, amount);
-    } catch {}
+    } catch (err) { log.warn({ err: err.message, key }, 'Balance accumulate failed'); }
   }
 
   async _getAccumulated(minerAddress, symbol) {
@@ -253,7 +253,7 @@ class MultiCoinPaymentProcessor extends EventEmitter {
     const key = `balance:${symbol}:${minerAddress}`;
     try {
       await this.redis.del(key);
-    } catch {}
+    } catch (err) { log.warn({ err: err.message, key }, 'Balance clear failed'); }
   }
 }
 
