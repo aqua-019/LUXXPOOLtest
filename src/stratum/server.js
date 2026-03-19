@@ -292,7 +292,7 @@ class StratumClient extends EventEmitter {
     log.info({ ip: this.remoteAddress, worker: this.workerName, reason }, 'Disconnecting');
     try {
       this.socket.destroy();
-    } catch {}
+    } catch (err) { log.debug({ err: err.message }, 'Socket destroy failed'); }
   }
 
   // ═══════════════════════════════════════════════════════

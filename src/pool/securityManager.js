@@ -159,6 +159,19 @@ class ShareFingerprintEngine {
   }
 
   /**
+   * Remove stale miner stats (no activity in 24 hours)
+   */
+  cleanup() {
+    const cutoff = Date.now() - 86400000; // 24 hours
+    for (const [address, stats] of this.minerStats) {
+      const lastShare = stats.shareTimes[stats.shareTimes.length - 1];
+      if (!lastShare || lastShare < cutoff) {
+        this.minerStats.delete(address);
+      }
+    }
+  }
+
+  /**
    * Detect block withholding by statistical analysis.
    *
    * A BWH attacker submits partial PoW (shares) but withholds
@@ -457,6 +470,7 @@ class SecurityManager extends EventEmitter {
   start() {
     this.cleanupTimer = setInterval(() => {
       this.anomalyEngine.cleanup();
+      this.fingerprintEngine.cleanup();
     }, 300000); // 5 min cleanup
 
     log.info('🛡️  Triple-layered security engine started');

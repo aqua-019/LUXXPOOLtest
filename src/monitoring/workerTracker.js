@@ -195,7 +195,7 @@ class WorkerTracker {
            hashrate = $4, last_share = NOW(), is_online = false`,
         [w.minerAddress, w.workerTag, w.workerName, w.totalDifficulty, w.ip, w.userAgent]
       );
-    } catch {}
+    } catch (err) { log.debug({ err: err.message }, 'Worker persist failed'); }
   }
 
   async _persistAll() {
@@ -210,7 +210,7 @@ class WorkerTracker {
              hashrate = $4, last_share = NOW(), is_online = true`,
           [w.minerAddress, w.workerTag, w.workerName, w.totalDifficulty, w.ip, w.userAgent]
         );
-      } catch {}
+      } catch (err) { log.debug({ err: err.message }, 'Worker batch persist failed'); }
     }
   }
 }

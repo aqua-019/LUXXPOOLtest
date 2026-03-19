@@ -387,6 +387,14 @@ async function main() {
         }
       }
     }
+    // Layer 1: Mining cookie validation (anti-hijack) — applies to all miners
+    const cookie = securityManager.cookieManager.getCookie(client.id);
+    if (cookie && client._miningCookie !== cookie) {
+      client.rejectShare(share.id, STRATUM.errors.SECURITY.code, 'Cookie mismatch');
+      client.disconnect('cookie mismatch');
+      return;
+    }
+
     // FLEET + PUBLIC: share validation is always the same (honest work = honest work)
     shareProcessor.processShare(client, share);
   }

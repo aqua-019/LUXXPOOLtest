@@ -75,13 +75,14 @@ const config = {
     maxBatch:  parseInt(process.env.PAYMENT_MAX_BATCH || '100'),
     txFee:     parseFloat(process.env.PAYMENT_TX_FEE || '0.001'),
     scheme:    process.env.PAYMENT_SCHEME || 'pplns',
-    pplnsWindow: parseInt(process.env.PPLNS_WINDOW || '2'),
+    pplnsWindow: parseInt(process.env.PPLNS_WINDOW || '10'),
   },
 
   api: {
     host:           process.env.API_HOST || '0.0.0.0',
     port:           parseInt(process.env.API_PORT || '8080'),
-    corsOrigin:     process.env.API_CORS_ORIGIN || '*',
+    corsOrigin:     process.env.API_CORS_ORIGIN || 'http://localhost:3000',
+    adminToken:     process.env.API_ADMIN_TOKEN || null,
     rateLimitWindow: parseInt(process.env.API_RATE_LIMIT_WINDOW || '900000'),
     rateLimitMax:   parseInt(process.env.API_RATE_LIMIT_MAX || '100'),
   },

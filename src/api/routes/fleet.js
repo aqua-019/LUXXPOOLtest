@@ -5,7 +5,19 @@ const { API } = require('../../ux/copy');
  */
 
 const { createLogger } = require('../../utils/logger');
+const config = require('../../../config');
 const log = createLogger('api:fleet');
+
+function requireAdminAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!config.api.adminToken) {
+    return res.status(503).json({ error: 'Admin token not configured' });
+  }
+  if (token !== config.api.adminToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
 
 function registerFleetRoutes(app, deps) {
   const { fleetManager } = deps;
@@ -48,7 +60,7 @@ function registerFleetRoutes(app, deps) {
   // Add IP or CIDR to fleet whitelist
   // POST /api/v1/fleet/ip { "ip": "203.0.113.50" }
   // POST /api/v1/fleet/ip { "ip": "10.0.0.0/24" }
-  app.post('/api/v1/fleet/ip', (req, res) => {
+  app.post('/api/v1/fleet/ip', requireAdminAuth, (req, res) => {
     const { ip } = req.body;
     if (!ip) return res.status(400).json({ error: API.validation.IP_REQUIRED, code: 'VALIDATION_ERROR' });
 
@@ -59,7 +71,7 @@ function registerFleetRoutes(app, deps) {
 
   // Remove IP from fleet whitelist
   // DELETE /api/v1/fleet/ip { "ip": "203.0.113.50" }
-  app.delete('/api/v1/fleet/ip', (req, res) => {
+  app.delete('/api/v1/fleet/ip', requireAdminAuth, (req, res) => {
     const { ip } = req.body;
     if (!ip) return res.status(400).json({ error: API.validation.IP_REQUIRED, code: 'VALIDATION_ERROR' });
 
@@ -69,7 +81,7 @@ function registerFleetRoutes(app, deps) {
 
   // Add LTC address to fleet whitelist
   // POST /api/v1/fleet/address { "address": "LhXk7..." }
-  app.post('/api/v1/fleet/address', (req, res) => {
+  app.post('/api/v1/fleet/address', requireAdminAuth, (req, res) => {
     const { address } = req.body;
     if (!address) return res.status(400).json({ error: API.validation.ADDRESS_REQUIRED, code: 'VALIDATION_ERROR' });
 
@@ -80,7 +92,7 @@ function registerFleetRoutes(app, deps) {
 
   // Remove address from fleet whitelist
   // DELETE /api/v1/fleet/address { "address": "LhXk7..." }
-  app.delete('/api/v1/fleet/address', (req, res) => {
+  app.delete('/api/v1/fleet/address', requireAdminAuth, (req, res) => {
     const { address } = req.body;
     if (!address) return res.status(400).json({ error: API.validation.ADDRESS_REQUIRED, code: 'VALIDATION_ERROR' });
 
@@ -90,7 +102,7 @@ function registerFleetRoutes(app, deps) {
 
   // Update fleet capacity
   // PUT /api/v1/fleet/capacity { "max": 200 }
-  app.put('/api/v1/fleet/capacity', (req, res) => {
+  app.put('/api/v1/fleet/capacity', requireAdminAuth, (req, res) => {
     const { max } = req.body;
     if (!max || max < 1) return res.status(400).json({ error: API.validation.MAX_INVALID, code: 'VALIDATION_ERROR' });
 
