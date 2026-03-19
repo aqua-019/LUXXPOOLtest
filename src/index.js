@@ -50,6 +50,8 @@ const { SCRYPT_COINS }      = require('../config/coins');
 const { STRATUM, OPS }      = require('./ux/copy');
 const RedisKeys             = require('./utils/redisKeys');
 
+const { version }           = require('../package.json');
+
 const log = createLogger('main');
 
 const AUX_SYMBOLS = ['DOGE', 'BELLS', 'LKY', 'PEP', 'JKC', 'DINGO', 'SHIC', 'TRMP', 'CRC'];
@@ -73,7 +75,7 @@ function loadAuxChainConfigs() {
 async function main() {
   log.info(`
   ╔═══════════════════════════════════════════════════════╗
-  ║           LUXXPOOL Mining Pool v0.4.0                 ║
+  ║           LUXXPOOL Mining Pool v${version}                 ║
   ║    Scrypt Multi-Coin Merged Mining (AuxPoW)           ║
   ║    Full Security Engine · Optimized Pool Core         ║
   ╚═══════════════════════════════════════════════════════╝
@@ -513,7 +515,7 @@ async function main() {
 
   // ─── API Server (with security routes) ──────────────────
   const apiApp = createApiServer({
-    db: dbQuery, redis, stratumServer, soloServer,
+    db: dbQuery, redis, redisKeys, stratumServer, soloServer,
     rpcClient: ltcRpc, auxRpcClients, auxPowEngine,
     hashrateEstimator, banningManager, blockWatcher,
     securityManager, fleetManager,
@@ -540,6 +542,7 @@ async function main() {
     blockWatcher.stop();
     banningManager.stop();
     securityManager.stop();
+    blockNotifier.stop();
     templateManager.stop();
     auxPowEngine.stop();
     stratumServer.stop();
@@ -564,7 +567,7 @@ async function main() {
   const auxList = Object.keys(auxRpcClients).join(', ') || 'none';
   log.info(`
   ═══════════════════════════════════════════════════════
-  LUXXPOOL v0.5.1 IS RUNNING — ALL SYSTEMS WIRED
+  LUXXPOOL v${version} IS RUNNING — ALL SYSTEMS WIRED
   ─────────────────────────────────────────────────────
   Pool Stratum:   :${config.stratum.port}
   SSL Stratum:    :${config.stratum.portSsl}

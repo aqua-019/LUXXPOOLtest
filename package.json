@@ -1,6 +1,6 @@
 {
   "name": "luxxpool",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "LUXXPOOL — Enterprise Litecoin & Dogecoin Merged Mining Pool",
   "main": "src/index.js",
   "scripts": {
@@ -40,6 +40,9 @@
     "eslint": "^9.0.0",
     "jest": "^29.7.0",
     "nodemon": "^3.1.0"
+  },
+  "optionalDependencies": {
+    "zeromq": "^6.0.0"
   },
   "engines": {
     "node": ">=20.0.0"

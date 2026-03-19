@@ -268,7 +268,7 @@ class BlockTemplateManager extends EventEmitter {
     const heightBuf = this._serializeBlockHeight(template.height);
     
     // Pool tag
-    const poolTag = Buffer.from(`/LUXXPOOL/${Date.now()}/`, 'ascii');
+    const poolTag = Buffer.from(`/LUXXPOOL/${template.height}/${this.currentJobId}/`, 'ascii');
     
     // scriptSig = height + poolTag + [EXTRANONCE GOES HERE]
     const scriptSigPre = Buffer.concat([heightBuf, poolTag]);
@@ -383,20 +383,14 @@ class BlockTemplateManager extends EventEmitter {
    */
   _buildStratumJob() {
     const template = this.currentTemplate;
-    const [coinbase1, coinbase2] = this._getCoinbaseParts();
-
-    // Transaction hashes for merkle branches
-    const txHashes = template.transactions.map(tx =>
-      Buffer.from(tx.hash || tx.txid, 'hex')
-    );
-    const merkleBranches = buildMerkleBranches(txHashes);
+    const job = this.validJobs.get(this.currentJobId);
 
     return {
       jobId:          this.currentJobId,
-      prevHash:       reverseHex(template.previousblockhash),
-      coinbase1:      coinbase1.toString('hex'),
-      coinbase2:      coinbase2.toString('hex'),
-      merkleBranches: merkleBranches.map(b => b.toString('hex')),
+      prevHash:       job.prevHashReversed,
+      coinbase1:      job.coinbase1.toString('hex'),
+      coinbase2:      job.coinbase2.toString('hex'),
+      merkleBranches: job.merkleBranches.map(b => b.toString('hex')),
       version:        intToLE32(template.version).toString('hex'),
       nbits:          template.bits,
       ntime:          Math.floor(Date.now() / 1000).toString(16),
