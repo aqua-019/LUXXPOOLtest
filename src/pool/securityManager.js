@@ -458,6 +458,16 @@ class SecurityManager extends EventEmitter {
     this.banningManager = deps.banningManager;
     this.db = deps.db;
 
+    // v0.7.0: Enhanced security dependencies
+    this.ipReputation = deps.ipReputation || null;
+    this.auditLog = deps.auditLog || null;
+
+    // v0.7.0: Subnet ban tracking
+    // When 5+ IPs from same /24 get banned, ban entire subnet
+    // Addresses: coordinated DDoS attacks (TeamDoge 200K+ IPs, 2014)
+    this.subnetBanThreshold = config.subnetBanThreshold || 5;
+    this.subnetBanCounts = new Map(); // subnet → Set of banned IPs
+
     // Auto-ban escalation
     this.anomalyEngine.on('alert', (alert) => {
       this._handleAlert(alert);
@@ -505,12 +515,50 @@ class SecurityManager extends EventEmitter {
   }
 
   /**
-   * Handle auto-ban escalation for repeated HIGH severity alerts
+   * Handle auto-ban escalation for repeated HIGH severity alerts.
+   * v0.7.0: Progressive ban durations + subnet banning + IP reputation.
+   *
+   * Progressive bans (addresses Miner's Dilemma — repeat offenders
+   * need escalating deterrence):
+   *   1st offense: 1 hour
+   *   2nd offense: 24 hours
+   *   3rd offense: permanent
+   *
+   * Subnet banning (addresses coordinated DDoS from /24 subnets):
+   *   5+ IPs from same /24 banned → ban entire subnet
    */
   _handleAlert(alert) {
     if (alert.severity === 'HIGH' && this.banningManager) {
-      // Immediate ban for high severity
-      this.banningManager.ban(alert.ip, `Security: ${alert.type}`, false);
+      // v0.7.0: Progressive ban duration
+      const banCount = this.ipReputation
+        ? this.ipReputation.getBanCount(alert.ip)
+        : 0;
+
+      let permanent = false;
+      if (banCount >= 2) {
+        permanent = true; // 3rd offense = permanent
+      }
+
+      this.banningManager.ban(alert.ip, `Security: ${alert.type}`, permanent);
+
+      // v0.7.0: Update IP reputation
+      if (this.ipReputation) {
+        this.ipReputation.recordSecurityAlert(alert.ip);
+        this.ipReputation.recordBan(alert.ip);
+      }
+
+      // v0.7.0: Track subnet for coordinated attack detection
+      this._trackSubnetBan(alert.ip);
+
+      // v0.7.0: Audit log
+      if (this.auditLog) {
+        this.auditLog.ban(alert.ip, `Security: ${alert.type}`, {
+          severity: alert.severity,
+          banCount: banCount + 1,
+          permanent,
+          type: alert.type,
+        });
+      }
     }
 
     // Log to database
@@ -523,6 +571,40 @@ class SecurityManager extends EventEmitter {
     }
 
     this.emit('alert', alert);
+  }
+
+  /**
+   * v0.7.0: Track banned IPs per subnet for coordinated attack detection.
+   * When 5+ IPs from same /24 get banned, ban the entire subnet.
+   */
+  _trackSubnetBan(ip) {
+    if (!ip || !this.banningManager) return;
+
+    const normalized = ip.replace(/^::ffff:/, '');
+    const parts = normalized.split('.');
+    if (parts.length !== 4) return;
+
+    const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+
+    if (!this.subnetBanCounts.has(subnet)) {
+      this.subnetBanCounts.set(subnet, new Set());
+    }
+
+    const bannedIps = this.subnetBanCounts.get(subnet);
+    bannedIps.add(normalized);
+
+    if (bannedIps.size >= this.subnetBanThreshold) {
+      log.warn({ subnet, bannedCount: bannedIps.size }, 'Subnet ban threshold reached — banning entire /24');
+      this.banningManager.ban(subnet, `Subnet ban: ${bannedIps.size} IPs from ${subnet} triggered bans`, true);
+
+      if (this.auditLog) {
+        this.auditLog.security('subnet_ban', {
+          subnet,
+          bannedIps: Array.from(bannedIps),
+          severity: 'HIGH',
+        });
+      }
+    }
   }
 
   /**

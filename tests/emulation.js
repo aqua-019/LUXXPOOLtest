@@ -338,6 +338,208 @@ assert(ov.totalMiners === 26, 'Total: 25 fleet + 1 public');
 console.log('');
 
 // ═══════════════════════════════════════════════════════════
+// EMULATION C: v0.7.0 — MINER DETECTION & SECURITY
+// ═══════════════════════════════════════════════════════════
+
+console.log('╔═══════════════════════════════════════════════╗');
+console.log('║  EMULATION C: v0.7.0 Features                 ║');
+console.log('╚═══════════════════════════════════════════════╝\n');
+
+const MinerRegistry = require('../src/pool/minerRegistry');
+const ConnectionFingerprint = require('../src/pool/connectionFingerprint');
+const EmergencyLockdown = require('../src/pool/emergencyLockdown');
+const IpReputation = require('../src/pool/ipReputation');
+const HashrateOptimizer = require('../src/pool/hashrateOptimizer');
+const AuditLog = require('../src/pool/auditLog');
+
+// C1: Miner Registry — Model Detection
+console.log('C1: Miner Model Detection');
+const registry = new MinerRegistry();
+
+const l9 = registry.identify('bitmain-antminer-l9/1.0.3');
+assert(l9 !== null, 'Detects Antminer L9');
+assert(l9.key === 'antminer-l9', 'L9 correct key');
+assert(l9.expectedHashrate === 340e9, 'L9 expected 340 GH/s');
+
+const l7 = registry.identify('Antminer L7');
+assert(l7 !== null, 'Detects Antminer L7');
+assert(l7.key === 'antminer-l7', 'L7 correct key');
+
+const l3 = registry.identify('bitmain/antminer-l3+');
+assert(l3 !== null, 'Detects Antminer L3+');
+assert(l3.key === 'antminer-l3plus', 'L3+ correct key');
+
+const dg2 = registry.identify('ElphaPex DG2 v2.1');
+assert(dg2 !== null, 'Detects ElphaPex DG2');
+assert(dg2.expectedHashrate === 36e9, 'DG2 expected 36 GH/s');
+
+const unknown = registry.identify('random-unknown-miner/1.0');
+assert(unknown === null, 'Unknown UA returns null');
+
+// Optimal difficulty
+assert(registry.getOptimalDifficulty('antminer-l9') === 65536, 'L9 optimal diff 65536');
+assert(registry.getOptimalDifficulty('antminer-l3plus') === 512, 'L3+ optimal diff 512');
+assert(registry.getOptimalDifficulty('goldshell-lt6') === 1024, 'LT6 optimal diff 1024');
+
+// Firmware version extraction
+const fwVer = registry.extractFirmwareVersion('bitmain-antminer-l9/1.0.3');
+assert(fwVer !== null, 'Extracts firmware version');
+
+// Firmware status check
+const fwStatus = registry.checkFirmwareStatus('antminer-l9', '1.0.0');
+assert(fwStatus !== null, 'Returns firmware status');
+assert(typeof fwStatus.outdated === 'boolean', 'Status has outdated flag');
+
+// All models
+const allModels = registry.getAllModels();
+assert(allModels.length === 8, '8 ASIC models registered');
+console.log('');
+
+// C2: Connection Fingerprinting
+console.log('C2: Connection Fingerprinting');
+const fp = new ConnectionFingerprint({ clusterThreshold: 3 });
+
+fp.onSubscribe('client-1', '10.0.0.1', 'antminer-l9/1.0');
+fp.onAuthorize('client-1', 'LTC_ADDR_1');
+assert(fp.profiles.has('client-1'), 'Profile created on subscribe');
+
+fp.onSubscribe('client-2', '10.0.0.2', 'antminer-l9/1.0');
+fp.onAuthorize('client-2', 'LTC_ADDR_2');
+
+// Simulate shares for fingerprint generation
+for (let i = 0; i < 15; i++) {
+  fp.onShare('client-1');
+  fp.onShare('client-2');
+}
+
+fp.onDisconnect('client-1');
+assert(!fp.profiles.has('client-1'), 'Profile cleaned on disconnect');
+fp.onDisconnect('client-2');
+console.log('');
+
+// C3: Emergency Lockdown
+console.log('C3: Emergency Lockdown');
+const lockdown = new EmergencyLockdown(
+  { db: null, auditLog: null, ipReputation: null },
+  { autoEscalation: false } // disable auto for testing
+);
+
+assert(lockdown.getLevel() === 0, 'Starts at level 0 (Normal)');
+assert(lockdown.getLevelName() === 'Normal', 'Level name: Normal');
+
+// Fleet always allowed at any level
+let check = lockdown.checkConnection(true, '10.0.0.1');
+assert(check.allowed === true, 'Fleet allowed at level 0');
+
+// Public allowed at level 0
+check = lockdown.checkConnection(false, '1.2.3.4');
+assert(check.allowed === true, 'Public allowed at level 0');
+
+// Level 3: maintenance
+lockdown.level = 3;
+check = lockdown.checkConnection(false, '1.2.3.4');
+assert(check.allowed === false, 'Public rejected at level 3');
+check = lockdown.checkConnection(true, '10.0.0.1');
+assert(check.allowed === true, 'Fleet still allowed at level 3');
+
+// Reset
+lockdown.level = 0;
+
+const status = lockdown.getStatus();
+assert(status.level === 0, 'Status returns current level');
+assert(typeof status.metrics !== 'undefined', 'Status includes metrics');
+console.log('');
+
+// C4: IP Reputation (in-memory only, no DB)
+console.log('C4: IP Reputation');
+const ipRep = new IpReputation({ db: null, auditLog: null }, { rejectThreshold: 10 });
+
+// Default score = 50
+let rep = ipRep.checkReputation('192.168.1.1');
+assert(rep.allowed === true, 'New IP allowed (score 50)');
+assert(rep.score === 50, 'Default score is 50');
+
+// Valid shares increase score
+ipRep.recordValidShares('192.168.1.1', 200);
+rep = ipRep.checkReputation('192.168.1.1');
+assert(rep.score > 50, 'Score increases with valid shares');
+
+// Invalid shares decrease
+ipRep.recordInvalidShares('192.168.1.1', 1);
+const afterInvalid = ipRep.checkReputation('192.168.1.1');
+
+// Security alert = big decrease
+ipRep.recordSecurityAlert('192.168.1.2');
+const afterAlert = ipRep.checkReputation('192.168.1.2');
+assert(afterAlert.score < 50, 'Security alert decreases score');
+
+// Drive a score below threshold
+for (let i = 0; i < 5; i++) {
+  ipRep.recordSecurityAlert('192.168.1.3');
+}
+const lowRep = ipRep.checkReputation('192.168.1.3');
+assert(lowRep.allowed === false, 'IP rejected when score below threshold');
+
+// Block found increases score
+ipRep.recordBlockFound('192.168.1.4');
+const afterBlock = ipRep.checkReputation('192.168.1.4');
+assert(afterBlock.score > 50, 'Block found increases score');
+console.log('');
+
+// C5: Hashrate Optimizer (unit test — no DB/estimator needed)
+console.log('C5: Hashrate Optimizer');
+const optimizer = new HashrateOptimizer({
+  hashrateEstimator: null,
+  minerRegistry: registry,
+  workerTracker: null,
+});
+
+optimizer.registerMiner('test-client-1', 'LTC_ADDR_1', 'antminer-l9');
+assert(optimizer.profiles.has('test-client-1'), 'Miner registered in optimizer');
+
+const minerInfo = optimizer.profiles.get('test-client-1');
+assert(minerInfo.expectedHashrate === 340e9, 'Expected hashrate from registry');
+assert(minerInfo.modelKey === 'antminer-l9', 'Model key stored');
+
+optimizer.removeMiner('test-client-1');
+assert(!optimizer.profiles.has('test-client-1'), 'Miner removed from optimizer');
+
+// Model efficiency (empty = no data)
+const modelEff = optimizer.getModelEfficiency();
+assert(typeof modelEff === 'object', 'Model efficiency returns object');
+console.log('');
+
+// C6: Audit Log (in-memory buffer, no DB)
+console.log('C6: Audit Log');
+const audit = new AuditLog({ db: null }, { retentionDays: 90 });
+
+audit.security('test_event', { ip: '10.0.0.1', severity: 'INFO' });
+assert(audit.buffer.length === 1, 'Event buffered');
+assert(audit.buffer[0].event_type === 'security:test_event', 'Event type stored');
+assert(audit.buffer[0].severity === 'INFO', 'Severity stored');
+
+audit.admin('admin_action', 'admin', { action: 'test' });
+assert(audit.buffer.length === 2, 'Admin event buffered');
+
+audit.ban('ban_event', { ip: '1.2.3.4', duration: 3600 });
+assert(audit.buffer.length === 3, 'Ban event buffered');
+
+audit.lockdown('lockdown_change', { level: 2, reason: 'test' });
+assert(audit.buffer.length === 4, 'Lockdown event buffered');
+console.log('');
+
+// C7: VarDiff Model Floor
+console.log('C7: VarDiff Model Floor');
+const VarDiff = require('../src/stratum/vardiff');
+const vd = new VarDiff({ min: 64, max: 65536, targetTime: 15, retargetTime: 90 });
+assert(vd.modelFloor === null, 'Default model floor is null');
+
+vd.setModelFloor(8192);
+assert(vd.modelFloor === 8192, 'Model floor set to 8192');
+assert(vd.minDiff >= 8192, 'minDiff raised to model floor');
+console.log('');
+
+// ═══════════════════════════════════════════════════════════
 // RESULTS
 // ═══════════════════════════════════════════════════════════
 
@@ -352,5 +554,6 @@ if (failed > 0) {
   console.log('\n✅ ALL TESTS PASSED');
   console.log('   Mining pipeline: mathematically correct');
   console.log('   Fleet management: 20 L9s + scaling + runtime ops verified');
+  console.log('   v0.7.0: Model detection, security, optimization verified');
   process.exit(0);
 }

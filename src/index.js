@@ -50,6 +50,16 @@ const { SCRYPT_COINS }      = require('../config/coins');
 const { STRATUM, OPS }      = require('./ux/copy');
 const RedisKeys             = require('./utils/redisKeys');
 
+// v0.7.0: New modules
+const MinerRegistry          = require('./pool/minerRegistry');
+const FirmwareTracker        = require('./pool/firmwareTracker');
+const HashrateOptimizer      = require('./pool/hashrateOptimizer');
+const IpReputation           = require('./pool/ipReputation');
+const ConnectionFingerprint  = require('./pool/connectionFingerprint');
+const EmergencyLockdown      = require('./pool/emergencyLockdown');
+const AuditLog               = require('./pool/auditLog');
+const PoolWebSocketServer    = require('./api/websocket');
+
 const { version }           = require('../package.json');
 
 const log = createLogger('main');
@@ -249,6 +259,70 @@ async function main() {
   log.info('🛡️  Security engine ACTIVE — all 3 layers wired');
 
   // ═══════════════════════════════════════════════════════
+  // v0.7.0: MINER MODEL DETECTION & FIRMWARE TRACKING
+  // ═══════════════════════════════════════════════════════
+  const minerRegistry = new MinerRegistry();
+
+  const auditLog = new AuditLog({ db: dbQuery }, {
+    retentionDays: parseInt(process.env.AUDIT_RETENTION_DAYS || '90'),
+  });
+  auditLog.start();
+
+  const ipReputation = new IpReputation(
+    { db: dbQuery, auditLog },
+    { rejectThreshold: parseInt(process.env.IP_REPUTATION_REJECT || '10') }
+  );
+  await ipReputation.start();
+
+  const connectionFingerprint = new ConnectionFingerprint({
+    clusterThreshold: parseInt(process.env.FINGERPRINT_CLUSTER_THRESHOLD || '5'),
+  });
+  connectionFingerprint.start();
+
+  const emergencyLockdown = new EmergencyLockdown(
+    { db: dbQuery, auditLog, ipReputation },
+    { autoEscalation: process.env.LOCKDOWN_AUTO_ESCALATION !== 'false' }
+  );
+  emergencyLockdown.start();
+
+  const firmwareTracker = new FirmwareTracker(
+    { minerRegistry, db: dbQuery, auditLog }
+  );
+  firmwareTracker.start();
+
+  const hashrateOptimizer = new HashrateOptimizer(
+    { hashrateEstimator, minerRegistry, workerTracker }
+  );
+  hashrateOptimizer.start();
+
+  // Wire v0.7.0 dependencies into existing security/banning
+  securityManager.ipReputation = ipReputation;
+  securityManager.auditLog = auditLog;
+  banningManager.ipReputation = ipReputation;
+
+  // Connection fingerprint cluster alerts → lockdown metrics
+  connectionFingerprint.on('clusterDetected', (cluster) => {
+    emergencyLockdown.recordSecurityAlert();
+    auditLog.security('cluster_detected', {
+      ...cluster,
+      severity: 'WARN',
+    });
+  });
+
+  // Hashrate optimizer underperformance → audit log
+  hashrateOptimizer.on('underperformance', (data) => {
+    auditLog.firmware('underperformance', data);
+  });
+
+  // Emergency lockdown level changes → audit log (already wired internally)
+  emergencyLockdown.on('levelChanged', (data) => {
+    log.warn({ level: data.level, reason: data.reason }, 'Lockdown level changed');
+  });
+
+  log.info('🔧 v0.7.0 systems initialized: MinerRegistry, FirmwareTracker, HashrateOptimizer');
+  log.info('🛡️  v0.7.0 security: IpReputation, ConnectionFingerprint, EmergencyLockdown, AuditLog');
+
+  // ═══════════════════════════════════════════════════════
   // FLEET MANAGEMENT — v0.5.1
   // Distinguishes LUXX-owned miners from public miners
   // ═══════════════════════════════════════════════════════
@@ -315,22 +389,63 @@ async function main() {
 
     if (!isFleet) {
       // PUBLIC: full security checks
+
+      // v0.7.0: Emergency lockdown check
+      const lockdownCheck = emergencyLockdown.checkConnection(false, client.remoteAddress);
+      if (!lockdownCheck.allowed) {
+        emergencyLockdown.recordRejectedConnection();
+        client.disconnect(lockdownCheck.reason);
+        return;
+      }
+
+      // v0.7.0: IP reputation check
+      const repCheck = ipReputation.checkReputation(client.remoteAddress);
+      if (!repCheck.allowed) {
+        emergencyLockdown.recordRejectedConnection();
+        client.disconnect('low reputation');
+        return;
+      }
+
       if (banningManager.isBanned(client.remoteAddress)) {
+        emergencyLockdown.recordRejectedConnection();
         client.disconnect('banned');
         return;
       }
       if (!banningManager.recordConnection(client.remoteAddress)) {
+        emergencyLockdown.recordRejectedConnection();
         client.disconnect('connection flood');
         return;
       }
     }
     // FLEET: skip ban check and connection limits entirely
 
+    // v0.7.0: Miner model detection from user-agent
+    const model = minerRegistry.identify(agent);
+    if (model) {
+      client._minerModel = model;
+      client._firmwareVersion = minerRegistry.extractFirmwareVersion(agent);
+
+      // Set model-aware initial difficulty (L9→65536, L3+→512, etc.)
+      const optimalDiff = minerRegistry.getOptimalDifficulty(model.key);
+      if (optimalDiff && optimalDiff !== client.difficulty) {
+        client.sendDifficulty(optimalDiff);
+      }
+
+      // Set VarDiff floor to prevent gaming
+      const diffFloor = minerRegistry.getDifficultyFloor(model.key);
+      if (diffFloor) {
+        client.vardiff.setModelFloor(diffFloor);
+      }
+    }
+
+    // v0.7.0: Connection fingerprinting
+    connectionFingerprint.onSubscribe(client.id, client.remoteAddress, agent);
+
     const cookie = securityManager.generateCookie(client.id, client.extraNonce1);
     client._miningCookie = cookie;
     client._isFleet = isFleet;
 
-    log.debug({ ip: client.remoteAddress, agent, fleet: isFleet }, 'Miner subscribed');
+    log.debug({ ip: client.remoteAddress, agent, fleet: isFleet, model: model?.name || 'unknown' }, 'Miner subscribed');
   });
 
   // Register miners on authorize (now we know their address)
@@ -339,6 +454,19 @@ async function main() {
     client._isFleet = type === 'fleet';
     fleetManager.registerMiner(client);
     workerTracker.onConnect(client, client.userAgent || 'unknown');
+
+    // v0.7.0: Connection fingerprint update
+    connectionFingerprint.onAuthorize(client.id, client.minerAddress);
+
+    // v0.7.0: Firmware check + advisory (sent on authorize per user preference)
+    if (client._minerModel && client._firmwareVersion) {
+      firmwareTracker.checkAndAdvisory(client, client._minerModel, client._firmwareVersion);
+    }
+
+    // v0.7.0: Register with hashrate optimizer
+    if (client._minerModel) {
+      hashrateOptimizer.registerMiner(client.id, client.minerAddress, client._minerModel.key);
+    }
   });
 
   // Solo mining connections
@@ -410,6 +538,9 @@ async function main() {
     if (!client._isFleet) {
       banningManager.recordValidShare(client.remoteAddress);
       securityManager.fingerprintEngine.recordShare(client.minerAddress, share.difficulty, false);
+      // v0.7.0: IP reputation + fingerprint
+      ipReputation.recordValidShares(client.remoteAddress, 1);
+      connectionFingerprint.onShare(client.id);
     }
     hashrateEstimator.recordShare(client.id, share.difficulty, client.minerAddress);
     client.hashrate = hashrateEstimator.getWorkerHashrate(client.id);
@@ -425,6 +556,9 @@ async function main() {
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
       securityManager.anomalyEngine.analyzeShare(client, { ...share, _invalid: true });
+      // v0.7.0: IP reputation + lockdown metrics
+      ipReputation.recordInvalidShares(client.remoteAddress, 1);
+      emergencyLockdown.recordInvalidShare();
     }
   });
 
@@ -455,6 +589,17 @@ async function main() {
     stratumServer.stats.blocksFound++;
     securityManager.fingerprintEngine.recordShare(client.minerAddress, 0, true);
     workerTracker.onBlockFound(client);
+
+    // v0.7.0: IP reputation boost + audit + WebSocket broadcast
+    ipReputation.recordBlockFound(client.remoteAddress);
+    auditLog.security('block_found', {
+      height: template.height,
+      worker: client.workerName,
+      address: client.minerAddress,
+      ip: client.remoteAddress,
+      severity: 'INFO',
+    });
+
     await templateManager.updateTemplate();
   });
 
@@ -467,6 +612,11 @@ async function main() {
     securityManager.cookieManager.remove(client.id);
     fleetManager.removeMiner(client.id);
     workerTracker.onDisconnect(client);
+
+    // v0.7.0: Cleanup fingerprint, firmware, optimizer
+    connectionFingerprint.onDisconnect(client.id);
+    firmwareTracker.onDisconnect(client.id);
+    hashrateOptimizer.removeMiner(client.id);
   }
 
   stratumServer.on('disconnect', handleDisconnect);
@@ -528,10 +678,43 @@ async function main() {
     hashrateEstimator, banningManager, blockWatcher,
     securityManager, fleetManager,
     workerTracker, healthMonitor,
+    // v0.7.0: New dependencies for dashboard + admin routes
+    hashrateOptimizer, ipReputation, emergencyLockdown,
+    auditLog, minerRegistry, firmwareTracker,
+    connectionFingerprint,
   });
 
-  apiApp.listen(config.api.port, config.api.host, () => {
+  const httpServer = apiApp.listen(config.api.port, config.api.host, () => {
     log.info({ port: config.api.port }, '🌐 API server listening');
+  });
+
+  // v0.7.0: WebSocket server — attach to HTTP server
+  const wsServer = new PoolWebSocketServer({
+    stratumServer, hashrateEstimator, emergencyLockdown, workerTracker,
+    adminToken: config.api.adminToken,
+  });
+  wsServer.attach(httpServer);
+
+  // Wire WebSocket broadcasts to events
+  shareProcessor.on('blockFound', (template, client) => {
+    wsServer.broadcastBlock({
+      height: template.height,
+      worker: client.workerName,
+      coin: 'LTC',
+      reward: template.coinbasevalue / 1e8,
+    });
+  });
+
+  emergencyLockdown.on('levelChanged', (data) => {
+    wsServer.broadcastLockdown(data);
+  });
+
+  connectionFingerprint.on('clusterDetected', (cluster) => {
+    wsServer.broadcastSecurityEvent({ type: 'cluster', ...cluster });
+  });
+
+  hashrateOptimizer.on('underperformance', (data) => {
+    wsServer.broadcastSecurityEvent({ type: 'underperformance', ...data });
   });
 
   // ─── Stats Collector ────────────────────────────────────
@@ -543,6 +726,15 @@ async function main() {
   // ─── Graceful Shutdown ──────────────────────────────────
   const shutdown = async (signal) => {
     log.info({ signal }, 'Shutting down LUXXPOOL...');
+    // v0.7.0: Stop new modules first
+    wsServer.stop();
+    hashrateOptimizer.stop();
+    firmwareTracker.stop();
+    emergencyLockdown.stop();
+    connectionFingerprint.stop();
+    ipReputation.stop();
+    await auditLog.stop();
+    // Core modules
     statsCollector.stop();
     hashrateEstimator.stop();
     workerTracker.stop();
@@ -587,7 +779,9 @@ async function main() {
   Fleet Fee: ${fleetManager.fleetFee * 100}%  │  Scheme: ${config.payment.scheme.toUpperCase()}
   ─────────────────────────────────────────────────────
   Fleet:          🏗  ${(process.env.FLEET_IPS || '').split(',').filter(Boolean).length} IPs whitelisted
-  Security:       🛡️  3-Layer (public miners only)
+  Security:       🛡️  3-Layer + IP Reputation + Lockdown
+  WebSocket:      🔌 /ws (pool, blocks, miner, admin)
+  Miner Models:   🔧 ${minerRegistry.getAllModels().length} ASIC profiles loaded
   Redis:          ${redisConnected ? '✅' : '⚠️  degraded'}
   ═══════════════════════════════════════════════════════
   `);

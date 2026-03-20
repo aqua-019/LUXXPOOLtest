@@ -37,6 +37,14 @@ class BanningManager extends EventEmitter {
     this.connectionRate = new Map(); // ip → [timestamps]
     this.warnings = new Map();      // ip → warning count
 
+    // v0.7.0: Progressive ban history for escalating durations
+    // 1st offense: 1h, 2nd: 24h, 3rd: permanent
+    // Addresses: repeat offenders and persistent attack patterns
+    this.banHistory = new Map();    // ip → { count, lastBan }
+
+    // v0.7.0: External dependencies (optional)
+    this.ipReputation = deps.ipReputation || null;
+
     // Cleanup timer
     this.cleanupTimer = null;
   }
@@ -174,10 +182,55 @@ class BanningManager extends EventEmitter {
    * @param {string} reason
    * @param {boolean} permanent
    */
+  /**
+   * v0.7.0: Get progressive ban duration based on prior offenses.
+   * 1st: 1 hour, 2nd: 24 hours, 3rd+: permanent
+   */
+  getProgressiveDuration(ip) {
+    const normalizedIp = this._normalizeIp(ip);
+    const history = this.banHistory.get(normalizedIp);
+    if (!history) return 3600; // 1 hour default
+
+    if (history.count >= 2) return Infinity; // permanent
+    if (history.count === 1) return 86400;   // 24 hours
+    return 3600; // 1 hour
+  }
+
+  /**
+   * v0.7.0: Get ban count for an IP.
+   */
+  getBanCount(ip) {
+    const history = this.banHistory.get(this._normalizeIp(ip));
+    return history ? history.count : 0;
+  }
+
   async ban(ip, reason, permanent = false) {
     const normalizedIp = this._normalizeIp(ip);
 
     if (this.bannedIps.has(normalizedIp)) return; // Already banned
+
+    // v0.7.0: Progressive ban duration
+    if (!permanent) {
+      const progressiveDuration = this.getProgressiveDuration(normalizedIp);
+      if (progressiveDuration === Infinity) {
+        permanent = true;
+      } else {
+        this.banDuration = progressiveDuration;
+      }
+    }
+
+    // v0.7.0: Track ban history
+    if (!this.banHistory.has(normalizedIp)) {
+      this.banHistory.set(normalizedIp, { count: 0, lastBan: 0 });
+    }
+    const history = this.banHistory.get(normalizedIp);
+    history.count++;
+    history.lastBan = Date.now();
+
+    // v0.7.0: Update IP reputation
+    if (this.ipReputation) {
+      this.ipReputation.recordBan(normalizedIp);
+    }
 
     const expiresAt = permanent ? Infinity : Date.now() + (this.banDuration * 1000);
 

@@ -100,6 +100,44 @@ const config = {
     sslCert:             process.env.SSL_CERT_PATH,
     sslKey:              process.env.SSL_KEY_PATH,
   },
+
+  // v0.7.0: WebSocket configuration
+  websocket: {
+    maxConnections:          parseInt(process.env.WS_MAX_CONNECTIONS || '500'),
+    heartbeatIntervalMs:     parseInt(process.env.WS_HEARTBEAT_MS || '30000'),
+    poolBroadcastIntervalMs: parseInt(process.env.WS_POOL_BROADCAST_MS || '10000'),
+    minerBroadcastIntervalMs: parseInt(process.env.WS_MINER_BROADCAST_MS || '30000'),
+  },
+
+  // v0.7.0: IP Reputation system
+  ipReputation: {
+    rejectThreshold: parseInt(process.env.IP_REPUTATION_REJECT || '10'),
+    decayRate:       parseFloat(process.env.IP_REPUTATION_DECAY_RATE || '1'),
+    persistIntervalMs: parseInt(process.env.IP_REPUTATION_PERSIST_MS || '300000'),
+  },
+
+  // v0.7.0: Emergency lockdown
+  emergencyLockdown: {
+    autoEscalation:    process.env.LOCKDOWN_AUTO_ESCALATION !== 'false',
+    deescalationMinutes: parseInt(process.env.LOCKDOWN_DEESCALATION_MIN || '15'),
+    rejectedThreshold: parseInt(process.env.LOCKDOWN_REJECTED_THRESHOLD || '100'),
+    invalidThreshold:  parseInt(process.env.LOCKDOWN_INVALID_THRESHOLD || '1000'),
+    bwhThreshold:      parseInt(process.env.LOCKDOWN_BWH_THRESHOLD || '3'),
+    alertThreshold:    parseInt(process.env.LOCKDOWN_ALERT_THRESHOLD || '50'),
+  },
+
+  // v0.7.0: Audit logging
+  auditLog: {
+    retentionDays: parseInt(process.env.AUDIT_RETENTION_DAYS || '90'),
+    flushIntervalMs: parseInt(process.env.AUDIT_FLUSH_MS || '10000'),
+    batchSize: parseInt(process.env.AUDIT_BATCH_SIZE || '50'),
+  },
+
+  // v0.7.0: Connection fingerprinting
+  fingerprint: {
+    clusterThreshold: parseInt(process.env.FINGERPRINT_CLUSTER_THRESHOLD || '5'),
+    minSharesForPrint: parseInt(process.env.FINGERPRINT_MIN_SHARES || '10'),
+  },
 };
 
 /**
