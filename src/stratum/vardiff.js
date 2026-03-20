@@ -18,9 +18,28 @@ class VarDiffManager {
     this.targetTime   = config.targetTime || 15;
     this.retargetTime = config.retargetTime || 90;
 
+    // v0.7.0: Model-aware difficulty floor
+    // Prevents VarDiff gaming: high-hashrate miners cannot
+    // manipulate difficulty below their model's floor.
+    // Addresses documented 6.5M shares/sec exploit at diff=0.001.
+    this.modelFloor   = null; // set by setModelFloor()
+
     this.shareTimes = [];
     this.lastRetarget = Date.now();
     this.lastShareTime = null;
+  }
+
+  /**
+   * v0.7.0: Set model-aware difficulty floor.
+   * Called when miner model is identified during subscribe.
+   * @param {number} floor - Minimum difficulty for this miner's model
+   */
+  setModelFloor(floor) {
+    this.modelFloor = floor;
+    // Enforce: model floor overrides global min if higher
+    if (floor > this.minDiff) {
+      this.minDiff = floor;
+    }
   }
 
   /**

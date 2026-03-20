@@ -37,6 +37,11 @@ class StratumClient extends EventEmitter {
     this.workerName = null;   // full: "address.workerName"
     this.minerAddress = null; // just the litecoin address
     this.workerTag = null;    // just the worker identifier
+    this.userAgent = null;    // v0.7.0: raw user-agent from subscribe
+
+    // v0.7.0: Miner model detection
+    this._minerModel = null;       // model profile from MinerRegistry
+    this._firmwareVersion = null;  // extracted firmware version
 
     // Mining state
     this.difficulty = config.difficulty || 512;
@@ -50,6 +55,12 @@ class StratumClient extends EventEmitter {
 
     // VarDiff
     this.vardiff = new VarDiffManager(config.vardiff);
+
+    // v0.7.0: Per-client rate limiting (anti-DDoS, anti-share-flooding)
+    // Addresses: documented 6.5M shares/sec VarDiff gaming exploit
+    this._messageTimestamps = [];
+    this._maxMessagesPerSec = 20;   // warn/disconnect threshold
+    this._banMessagesPerSec = 50;   // instant ban threshold
 
     // Socket handling
     this._buffer = '';
@@ -113,6 +124,23 @@ class StratumClient extends EventEmitter {
   _handleMessage(msg) {
     if (!msg.id && !msg.method) return;
 
+    // v0.7.0: Per-client rate limiting
+    const now = Date.now();
+    this._messageTimestamps.push(now);
+    const oneSecondAgo = now - 1000;
+    this._messageTimestamps = this._messageTimestamps.filter(t => t > oneSecondAgo);
+    if (this._messageTimestamps.length > this._banMessagesPerSec) {
+      log.warn({ ip: this.remoteAddress, rate: this._messageTimestamps.length }, 'Message flood — banning');
+      this.emit('rateLimit', this, 'ban');
+      this.disconnect('message flood');
+      return;
+    }
+    if (this._messageTimestamps.length > this._maxMessagesPerSec) {
+      log.warn({ ip: this.remoteAddress, rate: this._messageTimestamps.length }, 'Rate limit exceeded');
+      this.emit('rateLimit', this, 'warn');
+      return; // drop message silently
+    }
+
     switch (msg.method) {
       case 'mining.subscribe':
         this._handleSubscribe(msg);
@@ -145,6 +173,7 @@ class StratumClient extends EventEmitter {
    */
   _handleSubscribe(msg) {
     const userAgent = msg.params ? msg.params[0] : 'unknown';
+    this.userAgent = userAgent; // v0.7.0: store for model detection
     log.info({ ip: this.remoteAddress, agent: userAgent }, 'Miner subscribing');
 
     const subscriptions = [

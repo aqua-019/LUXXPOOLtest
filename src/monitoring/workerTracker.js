@@ -43,6 +43,11 @@ class WorkerTracker {
       connectedAt: Date.now(),
       lastShareAt: null,
 
+      // v0.7.0: Miner model detection
+      minerModel: client._minerModel?.name || null,
+      minerModelKey: client._minerModel?.key || null,
+      firmwareVersion: client._firmwareVersion || null,
+
       // Share accounting
       validShares: 0,
       invalidShares: 0,
@@ -157,6 +162,22 @@ class WorkerTracker {
   /**
    * Get stale share rate across the pool
    */
+  /**
+   * v0.7.0: Get model distribution for dashboard.
+   */
+  getModelDistribution() {
+    const distribution = {};
+    for (const [, w] of this.workers) {
+      const model = w.minerModel || 'Unknown';
+      if (!distribution[model]) {
+        distribution[model] = { count: 0, totalHashrate: 0 };
+      }
+      distribution[model].count++;
+      distribution[model].totalHashrate += w.totalDifficulty;
+    }
+    return distribution;
+  }
+
   getPoolStaleRate() {
     let totalValid = 0, totalStale = 0;
     for (const [, w] of this.workers) {
