@@ -210,12 +210,13 @@ class BanningManager extends EventEmitter {
     if (this.bannedIps.has(normalizedIp)) return; // Already banned
 
     // v0.7.0: Progressive ban duration
+    let effectiveDuration = this.banDuration;
     if (!permanent) {
       const progressiveDuration = this.getProgressiveDuration(normalizedIp);
       if (progressiveDuration === Infinity) {
         permanent = true;
       } else {
-        this.banDuration = progressiveDuration;
+        effectiveDuration = progressiveDuration;
       }
     }
 
@@ -232,7 +233,7 @@ class BanningManager extends EventEmitter {
       this.ipReputation.recordBan(normalizedIp);
     }
 
-    const expiresAt = permanent ? Infinity : Date.now() + (this.banDuration * 1000);
+    const expiresAt = permanent ? Infinity : Date.now() + (effectiveDuration * 1000);
 
     this.bannedIps.set(normalizedIp, {
       reason,
@@ -244,7 +245,7 @@ class BanningManager extends EventEmitter {
     log.info({
       ip: normalizedIp,
       reason,
-      duration: permanent ? 'permanent' : `${this.banDuration}s`,
+      duration: permanent ? 'permanent' : `${effectiveDuration}s`,
     }, '🚫 IP BANNED');
 
     // Persist to database

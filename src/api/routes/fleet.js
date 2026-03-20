@@ -1,9 +1,9 @@
 /**
-const { API } = require('../../ux/copy');
  * LUXXPOOL v0.5.2 — Fleet Management API Routes
  * Runtime fleet management: add miners, IPs, addresses without restart
  */
 
+const { API } = require('../../ux/copy');
 const { createLogger } = require('../../utils/logger');
 const config = require('../../../config');
 const log = createLogger('api:fleet');

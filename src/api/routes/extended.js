@@ -4,9 +4,9 @@ const { API } = require('../../ux/copy');
  * Multi-coin, aux chain stats, solo mining, banning, wallet registration
  */
 
-const { createLogger } = require('../utils/logger');
+const { createLogger } = require('../../utils/logger');
 const { SCRYPT_COINS } = require('../../config/coins');
-const HashrateEstimator = require('../monitoring/hashrateEstimator');
+const HashrateEstimator = require('../../monitoring/hashrateEstimator');
 
 const log = createLogger('api:ext');
 
