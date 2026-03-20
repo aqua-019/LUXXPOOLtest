@@ -101,6 +101,49 @@ const config = {
     sslKey:              process.env.SSL_KEY_PATH,
   },
 
+  // v0.7.0: Nine-layer SecurityEngine configuration
+  securityEngine: {
+    transport: {
+      requireTls:     process.env.SEC_REQUIRE_TLS === 'true',
+      minTlsVersion:  process.env.SEC_MIN_TLS_VERSION || 'TLSv1.2',
+    },
+    protocol: {
+      maxMessageBytes:   parseInt(process.env.SEC_MAX_MSG_BYTES || '2048'),
+      maxWorkerLength:   parseInt(process.env.SEC_MAX_WORKER_LEN || '96'),
+      maxPasswordLength: parseInt(process.env.SEC_MAX_PASSWORD_LEN || '64'),
+    },
+    auth: {
+      secret: process.env.COOKIE_SECRET || undefined,
+    },
+    fingerprint: {
+      minShares:    parseInt(process.env.SEC_FP_MIN_SHARES || '500'),
+      bwhThreshold: parseFloat(process.env.SEC_FP_BWH_THRESHOLD || '0.001'),
+      staleLimit:   parseFloat(process.env.SEC_FP_STALE_LIMIT || '0.20'),
+    },
+    behavior: {
+      maxSharesPerSec:       parseInt(process.env.SEC_MAX_SHARES_PER_SEC || '10'),
+      maxNtimeDeviation:     parseInt(process.env.SEC_MAX_NTIME_DEVIATION || '300'),
+      maxAddressesPerIp:     parseInt(process.env.SEC_MAX_ADDRS_PER_IP || '3'),
+      maxHashrateOscillation: parseInt(process.env.SEC_MAX_HASHRATE_OSCILLATION || '5'),
+    },
+    rateLimit: {
+      maxConnPerIp:       parseInt(process.env.SEC_MAX_CONN_PER_IP || '5'),
+      maxConnPerFleetIp:  parseInt(process.env.SEC_MAX_CONN_PER_FLEET_IP || '100'),
+      maxShareRatePerMin: parseInt(process.env.SEC_MAX_SHARE_RATE_PER_MIN || '600'),
+      maxConnRatePerMin:  parseInt(process.env.SEC_MAX_CONN_RATE_PER_MIN || '30'),
+    },
+    identity: {
+      maxWorkersPerAddress: parseInt(process.env.SEC_MAX_WORKERS_PER_ADDR || '50'),
+    },
+    reputation: {
+      banThreshold:  parseInt(process.env.SEC_REP_BAN_THRESHOLD || '100'),
+      flagThreshold: parseInt(process.env.SEC_REP_FLAG_THRESHOLD || '250'),
+    },
+    audit: {
+      maxLocalLog: parseInt(process.env.SEC_AUDIT_MAX_LOG || '10000'),
+    },
+  },
+
   // v0.7.0: WebSocket configuration
   websocket: {
     maxConnections:          parseInt(process.env.WS_MAX_CONNECTIONS || '500'),

@@ -67,6 +67,48 @@ function registerSecurityRoutes(app, deps) {
       joinedAt: stats.joinedAt,
     });
   });
+
+  // ── SecurityEngine (9-layer) endpoints ──────────────────
+  if (deps.securityEngine) {
+    const securityEngine = deps.securityEngine;
+
+    // 9-layer engine status overview
+    app.get('/api/v1/security/engine/status', requireAdminAuth, async (req, res) => {
+      try {
+        res.json(await securityEngine.getStatus());
+      } catch (err) {
+        log.error({ err: err.message }, 'SecurityEngine status error');
+        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+      }
+    });
+
+    // Audit trail query
+    app.get('/api/v1/security/engine/audit', requireAdminAuth, (req, res) => {
+      try {
+        const events = securityEngine.queryAudit({
+          limit:       parseInt(req.query.limit) || 50,
+          minSeverity: req.query.minSeverity || 'low',
+          layer:       req.query.layer ? parseInt(req.query.layer) : undefined,
+          address:     req.query.address,
+        });
+        res.json({ events });
+      } catch (err) {
+        log.error({ err: err.message }, 'SecurityEngine audit query error');
+        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+      }
+    });
+
+    // Miner reputation score
+    app.get('/api/v1/security/reputation/:address', requireAdminAuth, async (req, res) => {
+      try {
+        const score = await securityEngine.getReputation(req.params.address);
+        res.json({ address: req.params.address, score });
+      } catch (err) {
+        log.error({ err: err.message }, 'SecurityEngine reputation query error');
+        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+      }
+    });
+  }
 }
 
 module.exports = { registerSecurityRoutes };

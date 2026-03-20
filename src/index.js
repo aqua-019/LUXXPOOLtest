@@ -37,6 +37,7 @@ const SoloMiningServer      = require('./stratum/solo');
 const ShareProcessor        = require('./pool/shareProcessor');
 const BanningManager        = require('./pool/banningManager');
 const { SecurityManager }   = require('./pool/securityManager');
+const { SecurityEngine }    = require('./pool/securityEngine');
 const FleetManager          = require('./pool/fleetManager');
 const PaymentProcessor      = require('./payment/paymentProcessor');
 const MultiCoinPaymentProcessor = require('./payment/multiCoinPayment');
@@ -237,7 +238,26 @@ async function main() {
   banningManager.start();
 
   // ═══════════════════════════════════════════════════════
-  // SECURITY ENGINE — v0.4.0 WIRED
+  // FLEET MANAGEMENT — v0.5.1
+  // Distinguishes LUXX-owned miners from public miners
+  // (Moved before SecurityEngine — it's a dependency)
+  // ═══════════════════════════════════════════════════════
+  const fleetManager = new FleetManager({
+    ips:       (process.env.FLEET_IPS || '').split(',').filter(Boolean),
+    addresses: (process.env.FLEET_ADDRESSES || '').split(',').filter(Boolean),
+    fee:       parseFloat(process.env.FLEET_FEE || '0'),
+    maxMiners: parseInt(process.env.FLEET_MAX_MINERS || '100'),
+  });
+
+  log.info({
+    fleetIps: (process.env.FLEET_IPS || '').split(',').filter(Boolean).length,
+    fleetAddresses: (process.env.FLEET_ADDRESSES || '').split(',').filter(Boolean).length,
+    fleetFee: parseFloat(process.env.FLEET_FEE || '0') * 100 + '%',
+  }, '🏗  Fleet manager initialized');
+
+  // ═══════════════════════════════════════════════════════
+  // SECURITY ENGINE — v0.4.0 (legacy 3-layer, kept for
+  // backward compat with v0.7.0 modules)
   // ═══════════════════════════════════════════════════════
   const securityManager = new SecurityManager(
     {
@@ -256,7 +276,17 @@ async function main() {
   );
   securityManager.start();
 
-  log.info('🛡️  Security engine ACTIVE — all 3 layers wired');
+  // ═══════════════════════════════════════════════════════
+  // NINE-LAYER SECURITY ENGINE — v0.7.0
+  // Supersedes SecurityManager for the main pipeline
+  // ═══════════════════════════════════════════════════════
+  const securityEngine = new SecurityEngine(
+    config.securityEngine,
+    { redis, db: dbQuery, banningManager, fleetManager }
+  );
+  securityEngine.start();
+
+  log.info('🛡️  Nine-layer security engine ACTIVE');
 
   // ═══════════════════════════════════════════════════════
   // v0.7.0: MINER MODEL DETECTION & FIRMWARE TRACKING
@@ -321,23 +351,6 @@ async function main() {
 
   log.info('🔧 v0.7.0 systems initialized: MinerRegistry, FirmwareTracker, HashrateOptimizer');
   log.info('🛡️  v0.7.0 security: IpReputation, ConnectionFingerprint, EmergencyLockdown, AuditLog');
-
-  // ═══════════════════════════════════════════════════════
-  // FLEET MANAGEMENT — v0.5.1
-  // Distinguishes LUXX-owned miners from public miners
-  // ═══════════════════════════════════════════════════════
-  const fleetManager = new FleetManager({
-    ips:       (process.env.FLEET_IPS || '').split(',').filter(Boolean),
-    addresses: (process.env.FLEET_ADDRESSES || '').split(',').filter(Boolean),
-    fee:       parseFloat(process.env.FLEET_FEE || '0'),
-    maxMiners: parseInt(process.env.FLEET_MAX_MINERS || '100'),
-  });
-
-  log.info({
-    fleetIps: (process.env.FLEET_IPS || '').split(',').filter(Boolean).length,
-    fleetAddresses: (process.env.FLEET_ADDRESSES || '').split(',').filter(Boolean).length,
-    fleetFee: parseFloat(process.env.FLEET_FEE || '0') * 100 + '%',
-  }, '🏗  Fleet manager initialized');
 
   // ─── Stratum Servers ────────────────────────────────────
   const stratumServer = new StratumServer(
@@ -441,7 +454,8 @@ async function main() {
     // v0.7.0: Connection fingerprinting
     connectionFingerprint.onSubscribe(client.id, client.remoteAddress, agent);
 
-    const cookie = securityManager.generateCookie(client.id, client.extraNonce1);
+    // SecurityEngine L3: Issue mining cookie
+    const { cookie } = securityEngine.onSubscribe(client.id);
     client._miningCookie = cookie;
     client._isFleet = isFleet;
 
@@ -449,11 +463,22 @@ async function main() {
   });
 
   // Register miners on authorize (now we know their address)
-  stratumServer.on('authorize', (client, workerName) => {
+  stratumServer.on('authorize', async (client, workerName) => {
     const type = fleetManager.classify(client.remoteAddress, client.minerAddress);
     client._isFleet = type === 'fleet';
     fleetManager.registerMiner(client);
     workerTracker.onConnect(client, client.userAgent || 'unknown');
+
+    // SecurityEngine L7 (address validation) + L8 (reputation check)
+    try {
+      const authResult = await securityEngine.onAuthorize(client.id, workerName, client.remoteAddress);
+      if (authResult.result === 'ban' || authResult.result === 'reject') {
+        client.disconnect(authResult.reason);
+        return;
+      }
+    } catch (err) {
+      log.error({ err: err.message }, 'SecurityEngine onAuthorize error');
+    }
 
     // v0.7.0: Connection fingerprint update
     connectionFingerprint.onAuthorize(client.id, client.minerAddress);
@@ -482,7 +507,8 @@ async function main() {
         return;
       }
     }
-    const cookie = securityManager.generateCookie(client.id, client.extraNonce1);
+    // SecurityEngine L3: Issue mining cookie
+    const { cookie } = securityEngine.onSubscribe(client.id);
     client._miningCookie = cookie;
     client._isFleet = isFleet;
     fleetManager.registerMiner(client);
@@ -494,36 +520,34 @@ async function main() {
   // Public: ban → anomaly(L3) → share processor
   // ═══════════════════════════════════════════════════════
 
-  function handleShare(client, share) {
-    if (!client._isFleet) {
-      // PUBLIC MINERS: full security pipeline
-      if (banningManager.isBanned(client.remoteAddress)) {
-        client.rejectShare(share.id, STRATUM.errors.BANNED.code, STRATUM.errors.BANNED.message);
-        client.disconnect('banned');
+  async function handleShare(client, share) {
+    // SecurityEngine: unified 9-layer share validation (L3, L4, L5, L6, L7)
+    try {
+      const secResult = await securityEngine.onShare(
+        { id: client.id, ip: client.remoteAddress, address: client.minerAddress },
+        {
+          ...share,
+          submittedCookie: client._miningCookie,
+          isFleet: client._isFleet,
+          hashrateGhps: client.hashrate,
+        }
+      );
+
+      if (secResult.result === 'ban') {
+        banningManager.ban(client.remoteAddress, secResult.reason);
+        client.rejectShare(share.id, STRATUM.errors.SECURITY.code, secResult.reason);
+        client.disconnect('security ban');
         return;
       }
-
-      const anomalies = securityManager.anomalyEngine.analyzeShare(client, share);
-      if (anomalies) {
-        for (const alert of anomalies) {
-          if (alert.severity === 'HIGH') {
-            banningManager.ban(client.remoteAddress, `Security: ${alert.type}`);
-            client.rejectShare(share.id, STRATUM.errors.SECURITY.code, STRATUM.errors.SECURITY.message);
-            client.disconnect('security ban');
-            return;
-          }
-        }
+      if (secResult.result === 'reject') {
+        client.rejectShare(share.id, STRATUM.errors.SECURITY.code, secResult.reason);
+        return;
       }
-    }
-    // Layer 1: Mining cookie validation (anti-hijack) — applies to all miners
-    const cookie = securityManager.cookieManager.getCookie(client.id);
-    if (cookie && client._miningCookie !== cookie) {
-      client.rejectShare(share.id, STRATUM.errors.SECURITY.code, 'Cookie mismatch');
-      client.disconnect('cookie mismatch');
-      return;
+    } catch (err) {
+      log.error({ err: err.message }, 'SecurityEngine onShare error');
     }
 
-    // FLEET + PUBLIC: share validation is always the same (honest work = honest work)
+    // PASS or FLAG: proceed to share validation
     shareProcessor.processShare(client, share);
   }
 
@@ -537,7 +561,7 @@ async function main() {
   shareProcessor.on('validShare', (client, share) => {
     if (!client._isFleet) {
       banningManager.recordValidShare(client.remoteAddress);
-      securityManager.fingerprintEngine.recordShare(client.minerAddress, share.difficulty, false);
+      // L4 fingerprinting now handled by SecurityEngine.onShare()
       // v0.7.0: IP reputation + fingerprint
       ipReputation.recordValidShares(client.remoteAddress, 1);
       connectionFingerprint.onShare(client.id);
@@ -555,7 +579,7 @@ async function main() {
     workerTracker.onInvalidShare(client);
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
-      securityManager.anomalyEngine.analyzeShare(client, { ...share, _invalid: true });
+      // L5 behavioral analysis now handled by SecurityEngine.onShare()
       // v0.7.0: IP reputation + lockdown metrics
       ipReputation.recordInvalidShares(client.remoteAddress, 1);
       emergencyLockdown.recordInvalidShare();
@@ -587,8 +611,12 @@ async function main() {
     }, '🎉 LTC BLOCK FOUND');
 
     stratumServer.stats.blocksFound++;
-    securityManager.fingerprintEngine.recordShare(client.minerAddress, 0, true);
     workerTracker.onBlockFound(client);
+
+    // SecurityEngine L8: Reward miner reputation for block find
+    securityEngine.onBlockFound(client.minerAddress).catch(err =>
+      log.error({ err: err.message }, 'SecurityEngine onBlockFound error')
+    );
 
     // v0.7.0: IP reputation boost + audit + WebSocket broadcast
     ipReputation.recordBlockFound(client.remoteAddress);
@@ -609,9 +637,15 @@ async function main() {
 
   function handleDisconnect(client) {
     hashrateEstimator.removeWorker(client.id);
-    securityManager.cookieManager.remove(client.id);
     fleetManager.removeMiner(client.id);
     workerTracker.onDisconnect(client);
+
+    // SecurityEngine: L3 cookie revoke, L5 session analysis, L6/L7 cleanup
+    securityEngine.onDisconnect({
+      id: client.id,
+      ip: client.remoteAddress,
+      address: client.minerAddress,
+    }).catch(err => log.error({ err: err.message }, 'SecurityEngine onDisconnect error'));
 
     // v0.7.0: Cleanup fingerprint, firmware, optimizer
     connectionFingerprint.onDisconnect(client.id);
@@ -621,6 +655,9 @@ async function main() {
 
   stratumServer.on('disconnect', handleDisconnect);
   soloServer.on('disconnect', handleDisconnect);
+
+  // Wire L2 protocol validation into stratum server
+  stratumServer.protocolValidator = (raw, ip) => securityEngine.checkProtocol(raw, ip);
 
   // ─── Start Network Servers ──────────────────────────────
   stratumServer.start();
@@ -676,7 +713,7 @@ async function main() {
     db: dbQuery, redis, redisKeys, stratumServer, soloServer,
     rpcClient: ltcRpc, auxRpcClients, auxPowEngine,
     hashrateEstimator, banningManager, blockWatcher,
-    securityManager, fleetManager,
+    securityManager, securityEngine, fleetManager,
     workerTracker, healthMonitor,
     // v0.7.0: New dependencies for dashboard + admin routes
     hashrateOptimizer, ipReputation, emergencyLockdown,
@@ -694,6 +731,11 @@ async function main() {
     adminToken: config.api.adminToken,
   });
   wsServer.attach(httpServer);
+
+  // SecurityEngine L9: Wire alert hook → operator dashboard WebSocket
+  securityEngine.onAlert(event => {
+    wsServer.broadcastSecurityEvent({ type: 'security_alert', ...event });
+  });
 
   // Wire WebSocket broadcasts to events
   shareProcessor.on('blockFound', (template, client) => {
@@ -741,6 +783,7 @@ async function main() {
     healthMonitor.stop();
     blockWatcher.stop();
     banningManager.stop();
+    securityEngine.stop();
     securityManager.stop();
     blockNotifier.stop();
     templateManager.stop();
@@ -779,7 +822,7 @@ async function main() {
   Fleet Fee: ${fleetManager.fleetFee * 100}%  │  Scheme: ${config.payment.scheme.toUpperCase()}
   ─────────────────────────────────────────────────────
   Fleet:          🏗  ${(process.env.FLEET_IPS || '').split(',').filter(Boolean).length} IPs whitelisted
-  Security:       🛡️  3-Layer + IP Reputation + Lockdown
+  Security:       🛡️  9-Layer SecurityEngine + IP Reputation + Lockdown
   WebSocket:      🔌 /ws (pool, blocks, miner, admin)
   Miner Models:   🔧 ${minerRegistry.getAllModels().length} ASIC profiles loaded
   Redis:          ${redisConnected ? '✅' : '⚠️  degraded'}

@@ -62,6 +62,9 @@ class StratumClient extends EventEmitter {
     this._maxMessagesPerSec = 20;   // warn/disconnect threshold
     this._banMessagesPerSec = 50;   // instant ban threshold
 
+    // L2 Protocol validation callback (set by SecurityEngine)
+    this._protocolValidator = config.protocolValidator || null;
+
     // Socket handling
     this._buffer = '';
     this._setupSocket();
@@ -82,6 +85,25 @@ class StratumClient extends EventEmitter {
       for (const line of lines) {
         if (line.trim().length === 0) continue;
 
+        // L2 protocol validation (SecurityEngine integration)
+        if (this._protocolValidator) {
+          const check = this._protocolValidator(line, this.remoteAddress);
+          if (check.result !== 'pass') {
+            if (check.result === 'ban') {
+              this.emit('protocolBan', this, check.reason);
+              this.disconnect(check.reason);
+              return;
+            }
+            // reject: skip this message
+            this.shares.invalid++;
+            continue;
+          }
+          // Use the pre-parsed message from L2
+          this._handleMessage(check.parsed);
+          continue;
+        }
+
+        // Fallback: original JSON parsing
         try {
           const message = JSON.parse(line);
           this._handleMessage(message);
@@ -387,6 +409,7 @@ class StratumServer extends EventEmitter {
     this.ipCounts = new Map(); // ip → connection count
 
     this.server = null;
+    this.protocolValidator = null; // Set by index.js to wire SecurityEngine L2
     this.stats = {
       totalConnections: 0,
       peakConnections: 0,
@@ -464,6 +487,7 @@ class StratumServer extends EventEmitter {
     const client = new StratumClient(socket, extraNonce1, {
       difficulty: this.config.difficulty,
       vardiff: this.config.vardiff,
+      protocolValidator: this.protocolValidator,
     });
 
     this.clients.set(client.id, client);
