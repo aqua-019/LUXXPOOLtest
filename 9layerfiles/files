@@ -1,0 +1,155 @@
+/**
+ * LUXXPOOL v0.7.0 — SecurityEngine Integration Patch
+ * ─────────────────────────────────────────────────────────
+ * Apply these changes to src/index.js to wire all 9 layers.
+ * Shown as a diff-style guide; the full rewrite would replace
+ * the existing securityManager import and hookup points.
+ *
+ * CHANGES FROM v0.5.2:
+ *   - Replace: const { SecurityManager } = require('./pool/securityManager')
+ *   + Add:     const { SecurityEngine }  = require('./pool/securityEngine')
+ *   - securityManager → securityEngine throughout
+ *   + Add: onConnect, onSubscribe, onAuthorize, onShare, onDisconnect hooks
+ *   + Add: onBlockFound call in block submission path
+ *   + Add: checkProtocol() in stratum message handler
+ *   + Add: onAlert() hook for operator dashboard WebSocket push
+ */
+
+// ─── 1. IMPORT ──────────────────────────────────────────────
+// REMOVE:
+//   const { SecurityManager } = require('./pool/securityManager');
+// ADD:
+//   const { SecurityEngine }  = require('./pool/securityEngine');
+
+
+// ─── 2. INIT (after Redis + DB ready) ───────────────────────
+/*
+  const securityEngine = new SecurityEngine(
+    {
+      transport:   { requireTls: false, minTlsVersion: 'TLSv1.2' },
+      protocol:    { maxMessageBytes: 2048 },
+      auth:        { secret: process.env.COOKIE_SECRET },
+      fingerprint: { minShares: 500, bwhThreshold: 0.001 },
+      behavior:    { maxSharesPerSec: 10, maxNtimeDeviation: 300,
+                     maxAddressesPerIp: 3 },
+      rateLimit:   { maxConnPerIp: 5, maxConnPerFleetIp: 100,
+                     maxShareRatePerMin: 600 },
+      identity:    { maxWorkersPerAddress: 50 },
+      reputation:  { banThreshold: 100, flagThreshold: 250 },
+      audit:       { maxLocalLog: 10000 },
+    },
+    { redis, db: pool, banningManager, fleetManager }
+  );
+  securityEngine.start();
+
+  // Wire operator dashboard alert push (WebSocket broadcast)
+  securityEngine.onAlert(event => {
+    broadcastToOperators({ type: 'security_alert', event });
+  });
+*/
+
+
+// ─── 3. STRATUM SERVER HOOKS ─────────────────────────────────
+/*
+  stratumServer.on('client.connected', async (client) => {
+    const isFleet = fleetManager.isFleetIp(client.ip);
+    const result  = await securityEngine.onConnect(client.socket, client.ip, isFleet);
+    if (result.result === 'ban' || result.result === 'reject') {
+      client.socket.destroy();
+      return;
+    }
+  });
+
+  stratumServer.on('client.subscribed', (client) => {
+    const { cookie } = securityEngine.onSubscribe(client.id);
+    client.miningCookie = cookie;
+    // Embed cookie in extra nonce 1 space (first 8 chars)
+    client.extraNonce1 = cookie + client.extraNonce1.slice(8);
+  });
+
+  stratumServer.on('client.authorized', async (client) => {
+    const result = await securityEngine.onAuthorize(
+      client.id, client.workerName, client.ip
+    );
+    if (result.result === 'ban' || result.result === 'reject') {
+      client.socket.destroy();
+      return;
+    }
+    client.minerAddress = result.address;
+  });
+
+  stratumServer.on('client.disconnected', async (client) => {
+    await securityEngine.onDisconnect(client);
+  });
+*/
+
+
+// ─── 4. SHARE PROCESSOR HOOK ─────────────────────────────────
+/*
+  // In shareProcessor.processShare() — call before any other share logic:
+  const secResult = await securityEngine.onShare(client, {
+    ...share,
+    submittedCookie: client.miningCookie,
+    isFleet: fleetManager.isFleetIp(client.ip),
+  });
+
+  if (secResult.result === 'ban') {
+    banningManager.ban(client.ip, secResult.reason);
+    client.socket.destroy();
+    return { accepted: false, error: secResult.reason };
+  }
+  if (secResult.result === 'reject') {
+    return { accepted: false, error: secResult.reason };
+  }
+  // FLAG result: share accepted but miner is under scrutiny — continue normally
+*/
+
+
+// ─── 5. BLOCK FOUND HOOK ────────────────────────────────────
+/*
+  // In blockWatcher or submitBlock path, after confirmed block:
+  await securityEngine.onBlockFound(minerAddress);
+*/
+
+
+// ─── 6. RAW PROTOCOL VALIDATION ──────────────────────────────
+/*
+  // In stratum server message handler, before JSON.parse:
+  const protocolCheck = securityEngine.checkProtocol(rawMessage, client.ip);
+  if (protocolCheck.result !== 'pass') {
+    client.socket.write(JSON.stringify({
+      id: null, result: null,
+      error: [protocolCheck.layer * 10, protocolCheck.reason, null]
+    }) + '\n');
+    if (protocolCheck.result === 'ban') {
+      banningManager.ban(client.ip, protocolCheck.reason);
+      client.socket.destroy();
+    }
+    return;
+  }
+  const msg = protocolCheck.parsed;
+*/
+
+
+// ─── 7. API ROUTE ────────────────────────────────────────────
+/*
+  // In api/routes/security.js — add to existing routes:
+  app.get('/api/security/status', async (req, res) => {
+    res.json(await securityEngine.getStatus());
+  });
+
+  app.get('/api/security/audit', async (req, res) => {
+    const events = securityEngine.queryAudit({
+      limit:       parseInt(req.query.limit)       || 50,
+      minSeverity: req.query.minSeverity            || 'low',
+      layer:       req.query.layer ? parseInt(req.query.layer) : undefined,
+      address:     req.query.address,
+    });
+    res.json({ events });
+  });
+
+  app.get('/api/security/reputation/:address', async (req, res) => {
+    const score = await securityEngine.getReputation(req.params.address);
+    res.json({ address: req.params.address, score });
+  });
+*/
