@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>xmr.irish — Legal Status</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Playfair+Display:wght@400;500;600&family=DM+Mono:wght@300;400;500&family=Geologica:wght@100..900&family=Sora:wght@300;400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/d09.css">
+    <style>
+        .state-grid{display:grid;grid-template-columns:repeat(10,1fr);gap:3px}
+        .country-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:10px}
+        .popup{display:none;position:absolute;background:var(--g10);border:1px solid var(--g8);border-radius:10px;padding:8px 12px;z-index:100;min-width:200px;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+        .popup.vis{display:block}
+        .popup-name{font-family:var(--font-subhead);font-style:italic;font-size:14px;margin-bottom:3px}
+        .popup-status{font-family:var(--font-mono);font-size:11px;margin-bottom:3px}
+        .popup-detail{font-family:var(--font-body);font-size:11px;color:var(--g5);line-height:1.4}
+        .bitlic{margin-top:14px;border-radius:18px;border:1px solid rgba(255,71,87,.1);background:rgba(255,71,87,.02);padding:18px;max-height:80px;overflow:hidden;transition:max-height .5s ease}
+        .bitlic.expanded{max-height:600px}
+        .bitlic-hdr{display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+        .bitlic-title{font-family:var(--font-subhead);font-style:italic;font-size:16px;color:var(--red)}
+        .bitlic-toggle{font-family:var(--font-mono);font-size:11px;color:var(--g5);transition:color .2s}
+        .bitlic-toggle:hover{color:var(--g2)}
+        .bitlic-body{margin-top:10px;font-family:var(--font-body);font-size:12px;color:var(--g4);line-height:1.6}
+        .bitlic-body strong{color:var(--g2);font-weight:500}
+        .bitlic-body .point{margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(255,71,87,.03);border-left:2px solid rgba(255,71,87,.2)}
+        @media(max-width:768px){.state-grid{grid-template-columns:repeat(5,1fr)}.country-grid{grid-template-columns:repeat(3,1fr)}}
+    </style>
+</head>
+<body>
+<div class="page-offset" style="position:relative;overflow:hidden;min-height:100vh;">
+    <canvas id="constellation" class="constellation"></canvas>
+    <div class="blob blob-2"></div><div class="blob blob-4"></div>
+    <div class="z1">
+        <div id="nav-mount"></div>
+        <div class="sec">
+            <div class="sec-k">Legal Status / Global</div>
+            <div class="sec-t">Monero legal status</div>
+            <div class="sec-s">Hover for detail. This is not legal advice.</div>
+
+            <!-- 50 US States -->
+            <div style="font-family:var(--font-subhead);font-style:italic;font-size:15px;margin-bottom:6px">United States — 50 states</div>
+            <div class="state-grid" id="state-grid">
+            </div>
+
+            <!-- 30 Countries -->
+            <div style="font-family:var(--font-subhead);font-style:italic;font-size:15px;margin:14px 0 6px" id="country-grid-label">International — 30 countries</div>
+            <div class="country-grid" id="country-grid">
+            </div>
+
+            <!-- NY BitLicense Deep Dive -->
+            <div class="bitlic" id="bitlicense-section" onclick="this.classList.toggle('expanded')">
+                <div class="bitlic-hdr">
+                    <span class="bitlic-title">New York BitLicense — deep dive</span>
+                    <span class="bitlic-toggle" id="bitlic-btn">expand ▾</span>
+                </div>
+                <div class="bitlic-body">
+                    <p>New York's BitLicense (23 NYCRR Part 200) is the most restrictive cryptocurrency regulation in the United States. It requires <strong>any business</strong> engaging in virtual currency activity with NY residents to obtain a license from the NY Department of Financial Services (NYDFS).</p>
+                    <div class="point"><strong>For individuals:</strong> No license required to hold, mine, or use Monero personally. BitLicense applies only to businesses. You can hold XMR in NY legally.</div>
+                    <div class="point"><strong>For businesses:</strong> Must apply for BitLicense ($5,000 application fee, extensive compliance program). Most exchanges don't bother — they simply block NY users. Only ~30 BitLicenses have been issued since 2015.</div>
+                    <div class="point"><strong>For mining:</strong> Personal mining is legal in NY. Commercial mining operations may need permits based on electricity usage (see Moratorium on Proof-of-Work Mining Act, which applied to carbon-based PoW — Monero's RandomX is CPU-based and not specifically targeted).</div>
+                    <div class="point"><strong>Privacy coins specifically:</strong> No NY law specifically bans privacy coins. However, most licensed exchanges in NY exclude Monero because the NYDFS informally discourages listings of privacy-enhanced cryptocurrencies.</div>
+                    <div class="point" style="border-left-color:rgba(255,102,0,.3);background:rgba(255,102,0,.02)"><strong>Bottom line:</strong> In NY, you can legally hold, mine, and send Monero. You cannot easily buy it through exchanges that serve NY. Use P2P, atomic swaps, or non-custodial exchanges without NY restrictions (Haveno, Trocador).</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hover popup -->
+        <div class="popup" id="popup">
+            <div class="popup-name" id="pop-name"></div>
+            <div class="popup-status" id="pop-status"></div>
+            <div class="popup-detail" id="pop-detail"></div>
+        </div>
+
+        <div class="footer">
+            <span>xmr.irish / legal / C.3.3 / SJB83</span>
+            <div><a href="index.html">Home</a><a href="ecosystem.html">Ecosystem</a><a href="community.html">Community</a><a href="mining.html">Mining</a></div>
+            <span>Not legal advice. Research your jurisdiction.</span>
+        </div>
+    </div>
+</div>
+<script src="js/nav.js"></script>
+<script src="js/price-service.js"></script>
+<script src="js/monero-network.js"></script>
+<script src="js/genui.js"></script>
+<script>
+NavComponent.inject('nav-mount');
+PriceService.start();
+MoneroNetwork.start();
+
+// US States data
+var states=[
+{s:'AL',n:'Alabama',st:'legal',d:'No specific crypto restrictions.'},{s:'AK',n:'Alaska',st:'legal',d:'No money transmitter laws for crypto.'},{s:'AZ',n:'Arizona',st:'legal',d:'Crypto-friendly legislation passed.'},{s:'AR',n:'Arkansas',st:'legal',d:'Standard regulations.'},{s:'CA',n:'California',st:'legal',d:'DFPI oversees crypto. No specific privacy coin ban.'},{s:'CO',n:'Colorado',st:'legal',d:'Accepts crypto for state payments.'},{s:'CT',n:'Connecticut',st:'legal',d:'Money transmitter license required for businesses.'},{s:'DE',n:'Delaware',st:'legal',d:'Business-friendly, no specific restrictions.'},{s:'FL',n:'Florida',st:'legal',d:'Active crypto market. No privacy coin ban.'},{s:'GA',n:'Georgia',st:'legal',d:'Standard money transmitter laws.'},
+{s:'HI',n:'Hawaii',st:'exchange-restricted',d:'Banks cannot hold crypto. Limited exchange access.'},{s:'ID',n:'Idaho',st:'legal',d:'No specific restrictions.'},{s:'IL',n:'Illinois',st:'legal',d:'Digital commerce act. Standard oversight.'},{s:'IN',n:'Indiana',st:'legal',d:'Minimal restrictions.'},{s:'IA',n:'Iowa',st:'legal',d:'No specific crypto legislation.'},{s:'KS',n:'Kansas',st:'legal',d:'Standard money transmitter rules.'},{s:'KY',n:'Kentucky',st:'legal',d:'Standard regulations.'},{s:'LA',n:'Louisiana',st:'legal',d:'Virtual currency business act passed.'},{s:'ME',n:'Maine',st:'legal',d:'No specific restrictions.'},{s:'MD',n:'Maryland',st:'legal',d:'Standard money transmitter laws.'},
+{s:'MA',n:'Massachusetts',st:'legal',d:'Standard securities regulations.'},{s:'MI',n:'Michigan',st:'legal',d:'No specific crypto restrictions.'},{s:'MN',n:'Minnesota',st:'legal',d:'Standard regulations.'},{s:'MS',n:'Mississippi',st:'legal',d:'No specific restrictions.'},{s:'MO',n:'Missouri',st:'legal',d:'No specific restrictions.'},{s:'MT',n:'Montana',st:'legal',d:'Crypto-friendly state.'},{s:'NE',n:'Nebraska',st:'legal',d:'Digital asset banking framework.'},{s:'NV',n:'Nevada',st:'legal',d:'No personal income tax. Crypto-friendly.'},{s:'NH',n:'New Hampshire',st:'legal',d:'No sales tax. Crypto-friendly.'},{s:'NJ',n:'New Jersey',st:'legal',d:'Standard money transmitter laws.'},
+{s:'NM',n:'New Mexico',st:'legal',d:'No specific restrictions.'},{s:'NY',n:'New York',st:'restricted',d:'BitLicense required for businesses. Exchanges block NY users. Personal holding is legal. See deep dive below.'},{s:'NC',n:'North Carolina',st:'legal',d:'Standard money transmitter laws.'},{s:'ND',n:'North Dakota',st:'legal',d:'No specific restrictions. Cheap electricity.'},{s:'OH',n:'Ohio',st:'legal',d:'Previously accepted BTC for taxes.'},{s:'OK',n:'Oklahoma',st:'legal',d:'No specific restrictions.'},{s:'OR',n:'Oregon',st:'legal',d:'No specific restrictions.'},{s:'PA',n:'Pennsylvania',st:'legal',d:'Standard regulations.'},{s:'RI',n:'Rhode Island',st:'legal',d:'Standard regulations.'},{s:'SC',n:'South Carolina',st:'legal',d:'No specific restrictions.'},
+{s:'SD',n:'South Dakota',st:'legal',d:'No personal income tax. Crypto-friendly.'},{s:'TN',n:'Tennessee',st:'legal',d:'No personal income tax.'},{s:'TX',n:'Texas',st:'legal',d:'Crypto-friendly legislation. Mining incentives.'},{s:'UT',n:'Utah',st:'legal',d:'Blockchain promotion act.'},{s:'VT',n:'Vermont',st:'legal',d:'Blockchain-friendly legislation.'},{s:'VA',n:'Virginia',st:'legal',d:'Standard regulations.'},{s:'WA',n:'Washington',st:'legal',d:'Money transmitter license required.'},{s:'WV',n:'West Virginia',st:'legal',d:'No specific restrictions.'},{s:'WI',n:'Wisconsin',st:'legal',d:'Standard regulations.'},{s:'WY',n:'Wyoming',st:'legal',d:'Most crypto-friendly state in the US. DAO LLC law. Digital asset exemptions.'}
+];
+
+var countries=[
+{s:'UK',n:'United Kingdom',st:'legal',d:'FCA oversees. No privacy coin ban. Must register with FCA for business.'},{s:'DE',n:'Germany',st:'legal',d:'BaFin regulated. XMR legal to hold and trade. Tax-free after 1 year holding.'},{s:'IE',n:'Ireland',st:'legal',d:'Revenue Commissioners treat as property. No specific restrictions.'},{s:'FR',n:'France',st:'gray-zone',d:'AMF oversight. Privacy coins under enhanced scrutiny.'},{s:'JP',n:'Japan',st:'exchange-restricted',d:'FSA regulates. XMR delisted from all Japanese exchanges. Personal holding legal.'},{s:'KR',n:'South Korea',st:'exchange-restricted',d:'Privacy coins banned from exchanges since 2021. Personal holding not clearly addressed.'},
+{s:'AU',n:'Australia',st:'legal',d:'AUSTRAC regulated. XMR available on some exchanges. Standard CGT rules.'},{s:'CA',n:'Canada',st:'legal',d:'CRA treats as commodity. No specific privacy coin restrictions.'},{s:'CH',n:'Switzerland',st:'legal',d:'FINMA oversight. Crypto-friendly. Zug = Crypto Valley.'},{s:'SG',n:'Singapore',st:'legal',d:'MAS regulated. No specific privacy coin ban.'},{s:'NL',n:'Netherlands',st:'legal',d:'DNB registered. Standard EU regulations.'},{s:'BR',n:'Brazil',st:'legal',d:'CVM regulates. No specific restrictions. Active community.'},
+{s:'IN',n:'India',st:'gray-zone',d:'30% tax on crypto gains. No ban but hostile regulatory environment.'},{s:'RU',n:'Russia',st:'gray-zone',d:'Mining legal. Trading restricted. Complex regulatory landscape.'},{s:'AE',n:'UAE',st:'legal',d:'VARA in Dubai. Crypto-friendly. Free zones for crypto businesses.'},{s:'TH',n:'Thailand',st:'legal',d:'SEC regulated. Standard exchange licensing.'},{s:'PH',n:'Philippines',st:'legal',d:'BSP registered exchanges. Growing adoption.'},{s:'MX',n:'Mexico',st:'legal',d:'FinTech law covers crypto. Bitso and others operate.'},
+{s:'NG',n:'Nigeria',st:'gray-zone',d:'CBN previously restricted banks from crypto. Growing P2P market.'},{s:'ZA',n:'South Africa',st:'legal',d:'FSCA declaration as financial product. Standard regulations.'},{s:'AR',n:'Argentina',st:'legal',d:'High adoption due to inflation. No specific ban.'},{s:'CO',n:'Colombia',st:'legal',d:'No specific restrictions. Growing adoption.'},{s:'TR',n:'Turkey',st:'exchange-restricted',d:'CBRT banned crypto payments. Holding and trading still possible.'},{s:'PL',n:'Poland',st:'legal',d:'EU MiCA regulations. Standard oversight.'},
+{s:'CN',n:'China',st:'restricted',d:'All crypto trading and mining banned since 2021. Strict enforcement.'},{s:'DZ',n:'Algeria',st:'restricted',d:'All cryptocurrency use banned since 2018.'},{s:'BD',n:'Bangladesh',st:'restricted',d:'All crypto transactions banned.'},{s:'EG',n:'Egypt',st:'restricted',d:'Dar al-Ifta fatwa against crypto. Banking restrictions.'},{s:'MA',n:'Morocco',st:'restricted',d:'Crypto banned since 2017. Under review.'},{s:'NP',n:'Nepal',st:'restricted',d:'NRB banned all crypto trading.'}
+];
+
+function renderGrid(data,containerId,type){
+    var c=document.getElementById(containerId);
+    c.innerHTML=data.map(function(item){
+        return '<div class="lc '+item.st+'" data-state="'+item.s+'" data-name="'+item.n+'" data-status="'+item.st+'" data-detail="'+item.d.replace(/"/g,'&quot;')+'">'
+            +'<div class="lc-name">'+item.s+'</div>'
+            +'<div class="lc-status">'+item.st.replace('-',' ')+'</div></div>';
+    }).join('');
+}
+
+renderGrid(states,'state-grid','state');
+renderGrid(countries,'country-grid','country');
+
+// Hover popup
+var popup=document.getElementById('popup');
+document.querySelectorAll('.lc').forEach(function(el){
+    el.addEventListener('mouseenter',function(e){
+        document.getElementById('pop-name').textContent=el.dataset.name+' ('+el.dataset.state+')';
+        var statusEl=document.getElementById('pop-status');
+        statusEl.textContent=el.dataset.status.replace('-',' ');
+        statusEl.style.color=el.dataset.status==='legal'?'var(--grn)':el.dataset.status==='restricted'?'var(--red)':el.dataset.status==='exchange-restricted'?'var(--blue)':'var(--gold)';
+        document.getElementById('pop-detail').textContent=el.dataset.detail;
+        popup.classList.add('vis');
+        var r=el.getBoundingClientRect();
+        popup.style.left=r.left+'px';
+        popup.style.top=(r.bottom+4)+'px';
+    });
+    el.addEventListener('mouseleave',function(){popup.classList.remove('vis');});
+    // Click to search
+    el.addEventListener('click',function(){
+        window.open('https://www.google.com/search?q=monero+legal+status+'+encodeURIComponent(el.dataset.name),'_blank');
+    });
+});
+
+// BitLicense expand/collapse
+document.getElementById('bitlicense-section').addEventListener('click',function(){
+    var btn=document.getElementById('bitlic-btn');
+    btn.textContent=this.classList.contains('expanded')?'collapse ▴':'expand ▾';
+});
+</script>
+</body>
+</html>
