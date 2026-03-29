@@ -81,7 +81,9 @@ const config = {
   api: {
     host:           process.env.API_HOST || '0.0.0.0',
     port:           parseInt(process.env.API_PORT || '8080'),
-    corsOrigin:     process.env.API_CORS_ORIGIN || 'http://localhost:3000',
+    corsOrigin:     process.env.API_CORS_ORIGIN
+                      ? process.env.API_CORS_ORIGIN.split(',').map(s => s.trim())
+                      : ['http://localhost:3000'],
     adminToken:     process.env.API_ADMIN_TOKEN || null,
     rateLimitWindow: parseInt(process.env.API_RATE_LIMIT_WINDOW || '900000'),
     rateLimitMax:   parseInt(process.env.API_RATE_LIMIT_MAX || '100'),
@@ -200,6 +202,9 @@ function validateConfig() {
   }
   if (config.pool.fee < 0 || config.pool.fee > 0.10) {
     errors.push('POOL_FEE must be between 0 and 0.10 (0-10%)');
+  }
+  if (config.api.adminToken && config.api.adminToken.length < 32) {
+    errors.push('API_ADMIN_TOKEN must be at least 32 characters for security');
   }
 
   if (errors.length > 0) {

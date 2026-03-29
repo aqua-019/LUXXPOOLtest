@@ -90,9 +90,9 @@ services:
       -zmqpubhashblock=tcp://0.0.0.0:28332
       -zmqpubhashtx=tcp://0.0.0.0:28333
     ports:
-      - "9332:9332"
-      - "9333:9333"
-      - "28332:28332"
+      - "127.0.0.1:9332:9332"
+      - "127.0.0.1:9333:9333"
+      - "127.0.0.1:28332:28332"
     volumes:
       - ltc-data:/home/litecoin/.litecoin
     networks:
@@ -117,8 +117,8 @@ services:
       -rpcport=22555
       -txindex=1
     ports:
-      - "22555:22555"
-      - "22556:22556"
+      - "127.0.0.1:22555:22555"
+      - "127.0.0.1:22556:22556"
     volumes:
       - doge-data:/root/.dogecoin
     networks:

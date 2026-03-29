@@ -12,6 +12,7 @@ const {
   scryptHash,
   difficultyToTarget,
   bitsToTarget,
+  bitsToDifficulty,
   meetsTarget,
   calculateMerkleRoot,
   reverseBuffer,
@@ -308,7 +309,7 @@ class ShareProcessor extends EventEmitter {
           template.coinbasevalue,
           client.workerName,
           client.minerAddress,
-          template.bits,
+          bitsToDifficulty(template.bits).toFixed(8),
         ]
       );
     } catch (err) {

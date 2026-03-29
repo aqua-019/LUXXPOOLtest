@@ -1,5 +1,5 @@
 /**
- * LUXXPOOL v0.5.2 — Fleet Management API Routes
+ * LUXXPOOL — Fleet Management API Routes
  * Runtime fleet management: add miners, IPs, addresses without restart
  */
 
@@ -28,23 +28,23 @@ function registerFleetRoutes(app, deps) {
     res.json(fleetManager.getOverview());
   });
 
-  // Fleet miners detail
-  app.get('/api/v1/fleet/miners', (req, res) => {
+  // Fleet miners detail (admin — exposes individual miner data)
+  app.get('/api/v1/fleet/miners', requireAdminAuth, (req, res) => {
     res.json(fleetManager.getFleetStats());
   });
 
-  // Public miner stats
+  // Public miner stats (aggregate only — safe to expose)
   app.get('/api/v1/fleet/public', (req, res) => {
     res.json(fleetManager.getPublicStats());
   });
 
-  // Fleet configuration (current whitelist)
-  app.get('/api/v1/fleet/config', (req, res) => {
+  // Fleet configuration (admin — exposes IP/address whitelist)
+  app.get('/api/v1/fleet/config', requireAdminAuth, (req, res) => {
     res.json(fleetManager.getConfig());
   });
 
-  // Classify an IP/address
-  app.get('/api/v1/fleet/check', (req, res) => {
+  // Classify an IP/address (admin — reveals fleet classification logic)
+  app.get('/api/v1/fleet/check', requireAdminAuth, (req, res) => {
     const { ip, address } = req.query;
     res.json({
       ip, address,

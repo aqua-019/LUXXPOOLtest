@@ -1,6 +1,6 @@
 const { API } = require('../../ux/copy');
 /**
- * LUXXPOOL v0.3.0 — Security API Routes
+ * LUXXPOOL — Security API Routes
  */
 
 const { createLogger } = require('../../utils/logger');
