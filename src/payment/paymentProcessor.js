@@ -56,6 +56,11 @@ class PaymentProcessor extends EventEmitter {
     }
 
     this.processing = true;
+    const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    const timeout = setTimeout(() => {
+      log.error('Payment processing timeout — resetting processing flag');
+      this.processing = false;
+    }, PAYMENT_TIMEOUT_MS);
 
     try {
       // Step 1: Check for confirmed blocks ready for payout
@@ -101,6 +106,7 @@ class PaymentProcessor extends EventEmitter {
     } catch (err) {
       log.error({ err: err.message }, 'Payment processing error');
     } finally {
+      clearTimeout(timeout);
       this.processing = false;
     }
   }
@@ -248,19 +254,31 @@ class PaymentProcessor extends EventEmitter {
           totalAmount: Object.values(batch).reduce((a, b) => a + b, 0),
         }, 'Sending batch payment');
 
+        // Record pending payments BEFORE sending (idempotency guard)
+        const pendingIds = [];
+        for (const [address, amount] of Object.entries(batch)) {
+          const result = await this.db.query(
+            `INSERT INTO payments (address, amount, coin, status, block_height, sent_at)
+             VALUES ($1, $2, 'LTC', 'pending', $3, NOW()) RETURNING id`,
+            [address, amount, block.height]
+          );
+          pendingIds.push(result.rows[0].id);
+        }
+
         const txid = await this.rpc.sendMany('', batch);
 
         log.info({ txid, batchSize: batchAddresses.length }, 'Batch payment sent');
 
-        // Record payments in database
-        for (const [address, amount] of Object.entries(batch)) {
+        // Mark pending payments as sent with txid
+        for (const id of pendingIds) {
           await this.db.query(
-            `INSERT INTO payments (address, amount, txid, coin, status, block_height, sent_at)
-             VALUES ($1, $2, $3, 'LTC', 'sent', $4, NOW())`,
-            [address, amount, txid, block.height]
+            `UPDATE payments SET status = 'sent', txid = $1 WHERE id = $2`,
+            [txid, id]
           );
+        }
 
-          // Update miner total_paid
+        // Update miner total_paid
+        for (const [address, amount] of Object.entries(batch)) {
           await this.db.query(
             'UPDATE miners SET total_paid = total_paid + $1 WHERE address = $2',
             [amount, address]

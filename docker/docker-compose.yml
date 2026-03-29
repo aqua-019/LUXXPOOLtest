@@ -40,7 +40,7 @@ services:
     environment:
       POSTGRES_DB: luxxpool
       POSTGRES_USER: luxxpool
-      POSTGRES_PASSWORD: ${PG_PASS:-changeme}
+      POSTGRES_PASSWORD: ${PG_PASS:?PG_PASS env var required}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -82,7 +82,7 @@ services:
     command: >
       -server=1
       -rpcuser=${LTC_USER:-luxxpool_rpc}
-      -rpcpassword=${LTC_PASS:-changeme}
+      -rpcpassword=${LTC_PASS:?LTC_PASS env var required}
       -rpcallowip=0.0.0.0/0
       -rpcbind=0.0.0.0
       -rpcport=9332
@@ -111,7 +111,7 @@ services:
     command: >
       -server=1
       -rpcuser=${DOGE_USER:-luxxpool_rpc}
-      -rpcpassword=${DOGE_PASS:-changeme}
+      -rpcpassword=${DOGE_PASS:?DOGE_PASS env var required}
       -rpcallowip=0.0.0.0/0
       -rpcbind=0.0.0.0
       -rpcport=22555

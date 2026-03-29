@@ -352,14 +352,8 @@ class BlockTemplateManager extends EventEmitter {
     try {
       return addressToOutputScript(address);
     } catch (err) {
-      log.error({ address, err: err.message }, 'Failed to decode address — using fallback P2PKH');
-      // Fallback: P2PKH with SHA256-derived hash (ONLY for development)
-      const hash = crypto.createHash('sha256').update(address).digest().slice(0, 20);
-      return Buffer.concat([
-        Buffer.from([0x76, 0xa9, 0x14]),
-        hash,
-        Buffer.from([0x88, 0xac]),
-      ]);
+      log.error({ address, err: err.message }, 'Failed to decode address');
+      throw new Error(`Invalid address "${address}" — cannot build output script: ${err.message}`);
     }
   }
 
@@ -405,6 +399,10 @@ class BlockTemplateManager extends EventEmitter {
    */
   allocateExtraNonce1() {
     this.extraNonceCounter++;
+    if (this.extraNonceCounter > 0xFFFFFFFF) {
+      log.error('extraNonce1 counter overflow — resetting to 1');
+      this.extraNonceCounter = 1;
+    }
     const buf = Buffer.alloc(this.extraNonce1Size);
     buf.writeUInt32BE(this.extraNonceCounter);
     return buf.toString('hex');

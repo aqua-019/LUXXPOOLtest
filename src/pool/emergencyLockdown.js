@@ -301,7 +301,8 @@ class EmergencyLockdown extends EventEmitter {
     const previousLevel = this.level;
     this.level = newLevel;
     this.lastEscalation = Date.now();
-    this.manualOverride = false;
+    // Do NOT reset manualOverride here — admin lockdowns must not be
+    // automatically reversed by subsequent auto-escalation/de-escalation cycles.
 
     log.warn({
       from: LEVEL_NAMES[previousLevel],

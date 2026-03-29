@@ -51,6 +51,11 @@ class MultiCoinPaymentProcessor extends EventEmitter {
   async processAll() {
     if (this.processing) return;
     this.processing = true;
+    const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    const timeout = setTimeout(() => {
+      log.error('Multi-coin payment processing timeout — resetting processing flag');
+      this.processing = false;
+    }, PAYMENT_TIMEOUT_MS);
 
     try {
       for (const [symbol, rpc] of Object.entries(this.rpcClients)) {
@@ -64,6 +69,7 @@ class MultiCoinPaymentProcessor extends EventEmitter {
         }
       }
     } finally {
+      clearTimeout(timeout);
       this.processing = false;
     }
   }

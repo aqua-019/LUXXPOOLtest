@@ -316,17 +316,11 @@ function registerDashboardRoutes(app, deps) {
    * Rotate admin API key
    */
   app.post('/api/v1/admin/api-key/rotate', requireAdmin, (req, res) => {
-    const crypto = require('crypto');
-    const newToken = crypto.randomBytes(32).toString('hex');
-
-    // Note: this only updates in-memory. For production, persist to env/config.
-    config.api.adminToken = newToken;
-
-    if (auditLog) {
-      auditLog.admin('api_key_rotated', 'admin', { note: 'API key rotated via admin endpoint' });
-    }
-
-    res.json({ success: true, token: newToken, note: 'Token updated in-memory. Update ADMIN_TOKEN env var for persistence.' });
+    // Token rotation is disabled — in-memory changes are lost on restart,
+    // creating a false sense of security. Rotate via API_ADMIN_TOKEN env var.
+    res.status(501).json({
+      error: 'Token rotation via API is disabled. Update the API_ADMIN_TOKEN environment variable and restart the pool.',
+    });
   });
 
   /**

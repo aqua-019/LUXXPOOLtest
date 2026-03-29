@@ -207,6 +207,14 @@ class BanningManager extends EventEmitter {
   async ban(ip, reason, permanent = false) {
     const normalizedIp = this._normalizeIp(ip);
 
+    // v0.7.0: Track ban history (BEFORE early return so count is always incremented)
+    if (!this.banHistory.has(normalizedIp)) {
+      this.banHistory.set(normalizedIp, { count: 0, lastBan: 0 });
+    }
+    const history = this.banHistory.get(normalizedIp);
+    history.count++;
+    history.lastBan = Date.now();
+
     if (this.bannedIps.has(normalizedIp)) return; // Already banned
 
     // v0.7.0: Progressive ban duration
@@ -219,14 +227,6 @@ class BanningManager extends EventEmitter {
         effectiveDuration = progressiveDuration;
       }
     }
-
-    // v0.7.0: Track ban history
-    if (!this.banHistory.has(normalizedIp)) {
-      this.banHistory.set(normalizedIp, { count: 0, lastBan: 0 });
-    }
-    const history = this.banHistory.get(normalizedIp);
-    history.count++;
-    history.lastBan = Date.now();
 
     // v0.7.0: Update IP reputation
     if (this.ipReputation) {
