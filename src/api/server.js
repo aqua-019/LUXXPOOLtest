@@ -58,7 +58,12 @@ function createApiServer(deps) {
       ]);
 
       const poolHashrate = stratumServer ? stratumServer.getPoolHashrate() : 0;
-      const activeMiners = stratumServer ? stratumServer.clients.size : 0;
+      const activeWorkers = stratumServer ? stratumServer.clients.size : 0;
+      const uniqueMiners = stratumServer
+        ? new Set([...stratumServer.clients.values()]
+            .filter(c => c.authorized && c.minerAddress)
+            .map(c => c.minerAddress)).size
+        : 0;
 
       const totalShares = await redis.get(redisKeys.totalShares()).catch(() => 0);
 
@@ -71,8 +76,8 @@ function createApiServer(deps) {
         pool: {
           name: config.pool.name,
           hashrate: poolHashrate,
-          miners: activeMiners,
-          workers: activeMiners, // TODO: track individually
+          miners: uniqueMiners,
+          workers: activeWorkers,
           fee: config.pool.fee * 100 + '%',
           totalShares: parseInt(totalShares || 0),
         },

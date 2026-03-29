@@ -198,19 +198,8 @@ class BlockTemplateManager extends EventEmitter {
    * @returns {{ coinbaseHex: string, coinbaseHash: Buffer }}
    */
   buildCoinbase(extraNonce1Hex, extraNonce2Hex) {
-    const template = this.currentTemplate;
-    if (!template) throw new Error('No template available');
-
-    const [part1, part2] = this._getCoinbaseParts();
-
-    const extraNonce = Buffer.from(extraNonce1Hex + extraNonce2Hex, 'hex');
-    const coinbase = Buffer.concat([part1, extraNonce, part2]);
-    const coinbaseHash = sha256d(coinbase);
-
-    return {
-      coinbaseHex: coinbase.toString('hex'),
-      coinbaseHash,
-    };
+    if (!this.currentJobId) throw new Error('No template available');
+    return this.buildCoinbaseForJob(this.currentJobId, extraNonce1Hex, extraNonce2Hex);
   }
 
   /**

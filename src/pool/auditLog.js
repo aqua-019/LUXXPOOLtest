@@ -208,12 +208,17 @@ class AuditLog {
     if (!this.db) return;
 
     try {
-      const result = await this.db.query(
+      const auditResult = await this.db.query(
         `DELETE FROM audit_log WHERE timestamp < NOW() - INTERVAL '1 day' * $1`,
         [this.retentionDays]
       );
-      if (result.rowCount > 0) {
-        log.info({ removed: result.rowCount, retentionDays: this.retentionDays }, 'Audit log cleanup');
+      const eventsResult = await this.db.query(
+        `DELETE FROM security_events WHERE created_at < NOW() - INTERVAL '1 day' * $1`,
+        [this.retentionDays]
+      );
+      const total = (auditResult.rowCount || 0) + (eventsResult.rowCount || 0);
+      if (total > 0) {
+        log.info({ auditRemoved: auditResult.rowCount, eventsRemoved: eventsResult.rowCount, retentionDays: this.retentionDays }, 'Log cleanup');
       }
     } catch (err) {
       log.error({ err: err.message }, 'Audit log cleanup failed');

@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  LUXXPOOL v0.4.0 — Scrypt Multi-Coin Merged Mining Pool
+ *  LUXXPOOL — Scrypt Multi-Coin Merged Mining Pool
  *  Main Process — Full System Orchestrator
  *
  *  ALL SYSTEMS WIRED:
@@ -8,8 +8,8 @@
  *    → ShareProcessor → HashrateEstimator → BlockTemplateManager
  *    → AuxPowEngine → BlockWatcher → PaymentProcessors → API
  *
- *  v0.4.0 Fixes:
- *    - SecurityManager WIRED (was dead code in v0.3.x)
+ *  Features:
+ *    - SecurityManager with 3-layer + 9-layer security engines
  *    - Mining cookies generated on every connection
  *    - Share fingerprinting active on every share
  *    - Behavioral anomaly engine active on every share
@@ -527,6 +527,11 @@ async function main() {
         { id: client.id, ip: client.remoteAddress, address: client.minerAddress },
         {
           ...share,
+          // TODO: Mining cookie anti-hijack is not yet effective. Currently
+          // submittedCookie is the server-issued cookie (always matches itself).
+          // For real protection, cookie bytes must be embedded in the coinbase
+          // scriptSig and validated from the miner's submitted share data.
+          // Stratum v1 has no protocol field for miners to return cookies.
           submittedCookie: client._miningCookie,
           isFleet: client._isFleet,
           hashrateGhps: client.hashrate,
