@@ -1,6 +1,6 @@
 {
   "name": "luxxpool",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "LUXXPOOL — Enterprise Litecoin & Dogecoin Merged Mining Pool",
   "main": "src/index.js",
   "scripts": {

@@ -28,7 +28,11 @@ class RedisShareDedup {
     try {
       const result = await this.redis.set(key, '1', 'EX', this.ttl, 'NX');
       return result === null;
-    } catch {
+    } catch (err) {
+      if (!this._fallbackWarned) {
+        log.warn({ err: err.message }, 'Redis unavailable — using in-memory dedup fallback (not cluster-safe)');
+        this._fallbackWarned = true;
+      }
       return this._fallbackCheck(key);
     }
   }

@@ -9,7 +9,7 @@ const { createLogger } = require('../utils/logger');
 const { STRATUM } = require('../ux/copy');
 const {
   sha256d,
-  scryptHash,
+  scryptHashAsync,
   difficultyToTarget,
   bitsToTarget,
   bitsToDifficulty,
@@ -52,6 +52,18 @@ class ShareProcessor extends EventEmitter {
     const { jobId, extraNonce1, extraNonce2, ntime, nonce } = share;
 
     try {
+      // ── Step 0: Validate share field formats ──
+      if (!/^[0-9a-fA-F]{8}$/.test(nonce)) {
+        client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid nonce format');
+        this.emit('invalidShare', client, share, 'bad nonce');
+        return;
+      }
+      if (!/^[0-9a-fA-F]{8}$/.test(extraNonce2)) {
+        client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid extraNonce2 format');
+        this.emit('invalidShare', client, share, 'bad extraNonce2');
+        return;
+      }
+
       // ── Step 1: Validate job exists ──
       const jobEntry = this.templateManager.getJob(jobId);
       if (!jobEntry) {
@@ -85,8 +97,8 @@ class ShareProcessor extends EventEmitter {
         template, jobId, extraNonce1, extraNonce2, ntime, nonce
       );
 
-      // ── Step 5: Hash and validate ──
-      const hash = scryptHash(headerBuffer);
+      // ── Step 5: Hash and validate (async — non-blocking) ──
+      const hash = await scryptHashAsync(headerBuffer);
 
       // Check against share difficulty (miner's target)
       const shareTarget = difficultyToTarget(share.difficulty);

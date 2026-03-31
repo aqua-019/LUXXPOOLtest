@@ -119,7 +119,7 @@ const config = {
     },
     fingerprint: {
       minShares:    parseInt(process.env.SEC_FP_MIN_SHARES || '500'),
-      bwhThreshold: parseFloat(process.env.SEC_FP_BWH_THRESHOLD || '0.001'),
+      bwhThreshold: parseFloat(process.env.SEC_FP_BWH_THRESHOLD || '0.01'),
       staleLimit:   parseFloat(process.env.SEC_FP_STALE_LIMIT || '0.20'),
     },
     behavior: {
@@ -191,8 +191,13 @@ const config = {
 function validateConfig() {
   const errors = [];
 
-  if (!config.pool.feeAddress && config.pool.fee > 0) {
-    errors.push('POOL_FEE_ADDRESS required when POOL_FEE > 0');
+  if (config.pool.fee > 0) {
+    if (!config.pool.feeAddress) {
+      errors.push('POOL_FEE_ADDRESS required when POOL_FEE > 0');
+    } else if (!/^[LM3][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(config.pool.feeAddress)
+               && !/^ltc1[a-z0-9]{39,59}$/.test(config.pool.feeAddress)) {
+      errors.push('POOL_FEE_ADDRESS is not a valid Litecoin address format');
+    }
   }
   if (!config.litecoin.password) {
     errors.push('LTC_PASS (Litecoin RPC password) is required');

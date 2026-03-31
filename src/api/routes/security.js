@@ -1,6 +1,7 @@
 const { API } = require('../../ux/copy');
 /**
  * LUXXPOOL — Security API Routes
+ * All endpoints use the 9-layer SecurityEngine (v0.7.0+)
  */
 
 const { createLogger } = require('../../utils/logger');
@@ -19,12 +20,17 @@ function requireAdminAuth(req, res, next) {
 }
 
 function registerSecurityRoutes(app, deps) {
-  const { securityManager, db } = deps;
+  const { securityEngine, db } = deps;
 
-  // Security dashboard overview
-  app.get('/api/v1/security/status', requireAdminAuth, (req, res) => {
-    if (!securityManager) return res.json({ status: 'disabled' });
-    res.json(securityManager.getDashboard());
+  // Security dashboard overview (9-layer engine status)
+  app.get('/api/v1/security/status', requireAdminAuth, async (req, res) => {
+    if (!securityEngine) return res.json({ status: 'disabled' });
+    try {
+      res.json(await securityEngine.getStatus());
+    } catch (err) {
+      log.error({ err: err.message }, 'SecurityEngine status error');
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
   });
 
   // Recent security events
@@ -52,63 +58,54 @@ function registerSecurityRoutes(app, deps) {
     }
   });
 
-  // Miner suspicion score
-  app.get('/api/v1/security/miner/:address', requireAdminAuth, (req, res) => {
-    if (!securityManager) return res.json({ status: 'disabled' });
+  // Miner profile (fingerprinting data from L4)
+  app.get('/api/v1/security/miner/:address', requireAdminAuth, async (req, res) => {
+    if (!securityEngine) return res.json({ status: 'disabled' });
 
-    const stats = securityManager.fingerprintEngine.getStats(req.params.address);
-    if (!stats) return res.status(API.errors.MINER_NOT_TRACKED.status).json(API.errors.MINER_NOT_TRACKED);
+    const profile = securityEngine.layers.fingerprint.getProfile(req.params.address);
+    if (!profile) return res.status(API.errors.MINER_NOT_TRACKED.status).json(API.errors.MINER_NOT_TRACKED);
+
+    const score = await securityEngine.getReputation(req.params.address);
 
     res.json({
       address: req.params.address,
-      totalShares: stats.totalShares,
-      blocksFound: stats.fullPoW,
-      suspicionScore: stats.suspicionScore,
-      joinedAt: stats.joinedAt,
+      totalShares: profile.total,
+      blocksFound: profile.full,
+      staleShares: profile.stale,
+      reputationScore: score,
+      firstSeen: profile.firstSeen,
+      lastSeen: profile.lastSeen,
     });
   });
 
-  // ── SecurityEngine (9-layer) endpoints ──────────────────
-  if (deps.securityEngine) {
-    const securityEngine = deps.securityEngine;
+  // Audit trail query
+  app.get('/api/v1/security/engine/audit', requireAdminAuth, (req, res) => {
+    if (!securityEngine) return res.json({ events: [] });
+    try {
+      const events = securityEngine.queryAudit({
+        limit:       parseInt(req.query.limit) || 50,
+        minSeverity: req.query.minSeverity || 'low',
+        layer:       req.query.layer ? parseInt(req.query.layer) : undefined,
+        address:     req.query.address,
+      });
+      res.json({ events });
+    } catch (err) {
+      log.error({ err: err.message }, 'SecurityEngine audit query error');
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
+  });
 
-    // 9-layer engine status overview
-    app.get('/api/v1/security/engine/status', requireAdminAuth, async (req, res) => {
-      try {
-        res.json(await securityEngine.getStatus());
-      } catch (err) {
-        log.error({ err: err.message }, 'SecurityEngine status error');
-        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
-      }
-    });
-
-    // Audit trail query
-    app.get('/api/v1/security/engine/audit', requireAdminAuth, (req, res) => {
-      try {
-        const events = securityEngine.queryAudit({
-          limit:       parseInt(req.query.limit) || 50,
-          minSeverity: req.query.minSeverity || 'low',
-          layer:       req.query.layer ? parseInt(req.query.layer) : undefined,
-          address:     req.query.address,
-        });
-        res.json({ events });
-      } catch (err) {
-        log.error({ err: err.message }, 'SecurityEngine audit query error');
-        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
-      }
-    });
-
-    // Miner reputation score
-    app.get('/api/v1/security/reputation/:address', requireAdminAuth, async (req, res) => {
-      try {
-        const score = await securityEngine.getReputation(req.params.address);
-        res.json({ address: req.params.address, score });
-      } catch (err) {
-        log.error({ err: err.message }, 'SecurityEngine reputation query error');
-        res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
-      }
-    });
-  }
+  // Miner reputation score
+  app.get('/api/v1/security/reputation/:address', requireAdminAuth, async (req, res) => {
+    if (!securityEngine) return res.json({ score: null });
+    try {
+      const score = await securityEngine.getReputation(req.params.address);
+      res.json({ address: req.params.address, score });
+    } catch (err) {
+      log.error({ err: err.message }, 'SecurityEngine reputation query error');
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
+  });
 }
 
 module.exports = { registerSecurityRoutes };

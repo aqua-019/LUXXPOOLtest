@@ -4,12 +4,12 @@
  *  Main Process — Full System Orchestrator
  *
  *  ALL SYSTEMS WIRED:
- *    Stratum (pool/SSL/solo) → BanningManager → SecurityManager
+ *    Stratum (pool/SSL/solo) → BanningManager → SecurityEngine
  *    → ShareProcessor → HashrateEstimator → BlockTemplateManager
  *    → AuxPowEngine → BlockWatcher → PaymentProcessors → API
  *
  *  Features:
- *    - SecurityManager with 3-layer + 9-layer security engines
+ *    - Nine-layer SecurityEngine (v0.7.0+)
  *    - Mining cookies generated on every connection
  *    - Share fingerprinting active on every share
  *    - Behavioral anomaly engine active on every share
@@ -36,7 +36,6 @@ const StratumSSL            = require('./stratum/ssl');
 const SoloMiningServer      = require('./stratum/solo');
 const ShareProcessor        = require('./pool/shareProcessor');
 const BanningManager        = require('./pool/banningManager');
-const { SecurityManager }   = require('./pool/securityManager');
 const { SecurityEngine }    = require('./pool/securityEngine');
 const FleetManager          = require('./pool/fleetManager');
 const PaymentProcessor      = require('./payment/paymentProcessor');
@@ -256,29 +255,7 @@ async function main() {
   }, '🏗  Fleet manager initialized');
 
   // ═══════════════════════════════════════════════════════
-  // SECURITY ENGINE — v0.4.0 (legacy 3-layer, kept for
-  // backward compat with v0.7.0 modules)
-  // ═══════════════════════════════════════════════════════
-  const securityManager = new SecurityManager(
-    {
-      fingerprint: {
-        windowBlocks: 100,
-        bwhThreshold: 0.95,
-        minShareSample: 500,
-      },
-      anomaly: {
-        maxSharesPerSecond: 10,
-        maxNtimeDeviation: 300,
-        hashrateVarianceThreshold: 5.0,
-      },
-    },
-    { db: dbQuery, banningManager }
-  );
-  securityManager.start();
-
-  // ═══════════════════════════════════════════════════════
   // NINE-LAYER SECURITY ENGINE — v0.7.0
-  // Supersedes SecurityManager for the main pipeline
   // ═══════════════════════════════════════════════════════
   const securityEngine = new SecurityEngine(
     config.securityEngine,
@@ -326,8 +303,6 @@ async function main() {
   hashrateOptimizer.start();
 
   // Wire v0.7.0 dependencies into existing security/banning
-  securityManager.ipReputation = ipReputation;
-  securityManager.auditLog = auditLog;
   banningManager.ipReputation = ipReputation;
 
   // Connection fingerprint cluster alerts → lockdown metrics
@@ -718,7 +693,7 @@ async function main() {
     db: dbQuery, redis, redisKeys, stratumServer, soloServer,
     rpcClient: ltcRpc, auxRpcClients, auxPowEngine,
     hashrateEstimator, banningManager, blockWatcher,
-    securityManager, securityEngine, fleetManager,
+    securityEngine, fleetManager,
     workerTracker, healthMonitor,
     // v0.7.0: New dependencies for dashboard + admin routes
     hashrateOptimizer, ipReputation, emergencyLockdown,
@@ -789,7 +764,6 @@ async function main() {
     blockWatcher.stop();
     banningManager.stop();
     securityEngine.stop();
-    securityManager.stop();
     blockNotifier.stop();
     templateManager.stop();
     auxPowEngine.stop();

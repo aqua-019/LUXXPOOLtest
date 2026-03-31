@@ -1,6 +1,6 @@
 /**
- * LUXXPOOL v0.6.0 — EMULATION C: Critical Path Tests
- * Address validation · Security manager · Redis keys · VarDiff
+ * LUXXPOOL v0.7.2 — EMULATION C: Critical Path Tests
+ * Address validation · Security engine · Redis keys · VarDiff
  * No external dependencies — pure emulation
  */
 
@@ -142,12 +142,12 @@ test('No double prefix', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// C3: SECURITY MANAGER — Unit Tests
+// C3: SECURITY ENGINE — Unit Tests (9-layer, v0.7.0+)
 // ═══════════════════════════════════════════════════════
 
-console.log('\nC3: Security Manager\n');
+console.log('\nC3: Security Engine (9-layer)\n');
 
-const { SecurityManager } = require('../src/pool/securityManager');
+const { SecurityEngine } = require('../src/pool/securityEngine');
 
 const mockDb = { query: async () => ({ rows: [] }) };
 const mockBanning = {
@@ -155,77 +155,71 @@ const mockBanning = {
   isBanned: () => false,
   recordViolation: () => {},
 };
+const mockRedis = {
+  get: async () => null,
+  set: async () => 'OK',
+  pipeline: () => ({ exec: async () => [] }),
+};
 
-const sec = new SecurityManager(
+const secEngine = new SecurityEngine(
   {
-    fingerprint: { windowBlocks: 100, bwhThreshold: 0.95, minShareSample: 500 },
-    anomaly: { maxSharesPerSecond: 10, maxNtimeDeviation: 300, hashrateVarianceThreshold: 5.0 },
+    transport: { requireTls: false },
+    protocol: { maxMessageBytes: 2048, maxWorkerLength: 96, maxPasswordLength: 64 },
+    auth: {},
+    fingerprint: { minShares: 500, bwhThreshold: 0.01, staleLimit: 0.20 },
+    behavior: { maxSharesPerSec: 10, maxNtimeDeviation: 300, maxAddressesPerIp: 3, maxHashrateOscillation: 5 },
+    rateLimit: { maxConnPerIp: 5, maxConnPerFleetIp: 100, maxShareRatePerMin: 600, maxConnRatePerMin: 30 },
+    identity: { maxWorkersPerAddress: 50 },
+    reputation: { banThreshold: 100, flagThreshold: 250 },
+    audit: { maxLocalLog: 10000 },
   },
-  { db: mockDb, banningManager: mockBanning }
+  { redis: mockRedis, db: mockDb, banningManager: mockBanning }
 );
 
-test('L1: Cookie generation returns string', () => {
-  const cookie = sec.generateCookie('client1', 'en1');
-  assert(typeof cookie === 'string', `Expected string, got ${typeof cookie}`);
-  assert(cookie.length > 0, 'Cookie should not be empty');
+test('SecurityEngine has all 9 layers', () => {
+  assert(secEngine.layers, 'Missing layers object');
+  assert(secEngine.layers.transport, 'Missing L1: transport');
+  assert(secEngine.layers.protocol, 'Missing L2: protocol');
+  assert(secEngine.layers.auth, 'Missing L3: auth');
+  assert(secEngine.layers.fingerprint, 'Missing L4: fingerprint');
+  assert(secEngine.layers.behavior, 'Missing L5: behavior');
+  assert(secEngine.layers.rateLimit, 'Missing L6: rate limit');
+  assert(secEngine.layers.identity, 'Missing L7: identity');
+  assert(secEngine.layers.reputation, 'Missing L8: reputation');
+  assert(secEngine.layers.audit, 'Missing L9: audit');
 });
 
-test('L1: Cookies are unique per client', () => {
-  const c1 = sec.generateCookie('client1', 'en1');
-  const c2 = sec.generateCookie('client2', 'en2');
-  assert(c1 !== c2, 'Cookies should be unique');
+test('L1: Transport layer accepts plaintext', () => {
+  const result = secEngine.layers.transport.check({ encrypted: false });
+  assert(result.result === 'pass', `Expected pass, got ${result.result}`);
 });
 
-test('L1: Cookie stored in manager', () => {
-  sec.generateCookie('testClient', 'testEN');
-  assert(sec.cookieManager.cookies.has('testClient'), 'Cookie should be stored');
+test('L2: Protocol layer rejects oversized messages', () => {
+  const result = secEngine.layers.protocol.check(Buffer.alloc(3000).toString(), '127.0.0.1');
+  assert(result.result === 'reject', `Expected reject for oversized message, got ${result.result}`);
 });
 
-test('L2: New miner not flagged as BWH', () => {
-  // Record a normal pattern — lots of shares, some blocks
-  const addr = 'LtestMiner' + Date.now();
-  for (let i = 0; i < 100; i++) {
-    sec.fingerprintEngine.recordShare(addr, 512, false);
-  }
-  sec.fingerprintEngine.recordShare(addr, 512, true); // found a block
-
-  const stats = sec.fingerprintEngine.minerStats.get(addr);
-  assert(stats, 'Miner should have stats');
-  assert(stats.fullPoW > 0, 'Should have recorded block');
+test('L4: Fingerprint layer tracks shares', () => {
+  const addr = 'LtestFP' + Date.now();
+  secEngine.layers.fingerprint.recordShare(addr, 512, false);
+  const profile = secEngine.layers.fingerprint.getProfile(addr);
+  assert(profile, 'Fingerprint profile should exist after share');
+  assert(profile.total > 0, 'Total shares should be > 0');
 });
 
-test('L3: Share flood detection', () => {
-  const mockClient = {
-    id: 'floodClient',
-    remoteAddress: '10.0.0.99',
-    minerAddress: 'LfloodTest',
-    workerName: 'LfloodTest.w1',
-    _isFleet: false,
-  };
-
-  // Simulate rapid share submissions
-  const alerts = [];
-  for (let i = 0; i < 15; i++) {
-    const result = sec.anomalyEngine.analyzeShare(mockClient, {
-      difficulty: 512,
-      timestamp: Date.now(),
-    });
-    if (result) alerts.push(...result);
-  }
-  // Should detect flood pattern (depends on time between calls)
-  // At minimum, the anomaly engine should accept without crashing
-  assert(typeof alerts !== 'undefined', 'Anomaly engine should return array or null');
+test('L6: Rate limiter tracks connections per IP', () => {
+  const rl = secEngine.layers.rateLimit;
+  assert(rl.activeConns instanceof Map, 'activeConns should be a Map');
 });
 
-test('L3: Sybil detection data structure', () => {
-  const profile = sec.anomalyEngine.profiles;
-  assert(profile instanceof Map, 'Profiles should be a Map');
+test('L8: Reputation engine initializes', () => {
+  const rep = secEngine.layers.reputation;
+  assert(typeof rep.getScore === 'function' || typeof rep.scores !== 'undefined', 'Reputation layer should have scoring');
 });
 
-test('Security manager has all 3 layers', () => {
-  assert(sec.cookieManager, 'Missing L1: cookie manager');
-  assert(sec.fingerprintEngine, 'Missing L2: fingerprint engine');
-  assert(sec.anomalyEngine, 'Missing L3: anomaly engine');
+test('L9: Audit trail buffer exists', () => {
+  const audit = secEngine.layers.audit;
+  assert(audit.localLog instanceof Array, 'Audit should have localLog array');
 });
 
 // ═══════════════════════════════════════════════════════

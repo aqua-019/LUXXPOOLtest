@@ -110,6 +110,11 @@ function registerExtendedRoutes(app, deps) {
       return res.status(400).json({ error: `Unknown coin: ${coin}` });
     }
 
+    // Validate coin address format (basic length + charset check)
+    if (!coinAddress || coinAddress.length < 20 || coinAddress.length > 64 || !/^[a-zA-Z0-9]+$/.test(coinAddress)) {
+      return res.status(400).json({ error: 'Invalid coin address format', code: 'VALIDATION_ERROR' });
+    }
+
     try {
       await db.query(
         `INSERT INTO miner_wallets (miner_address, coin, coin_address, updated_at)

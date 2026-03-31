@@ -182,16 +182,26 @@ class AuxPowEngine extends EventEmitter {
     for (const [symbol, auxBlock] of auxBlocks) {
       const slot = this._getAuxSlot(auxBlock.chainId, merkleSize, merkleNonce);
 
-      if (slots[slot] !== null) {
-        log.warn({
-          coin: symbol,
-          slot,
-          existing: slots[slot].symbol,
-        }, 'Aux merkle slot collision — skipping');
-        continue;
+      // Linear probing on slot collision
+      let actualSlot = slot;
+      if (slots[actualSlot] !== null) {
+        log.warn({ coin: symbol, slot, existing: slots[actualSlot].symbol }, 'Aux merkle slot collision — probing');
+        let probed = false;
+        for (let j = 1; j < merkleSize; j++) {
+          const candidate = (slot + j) % merkleSize;
+          if (slots[candidate] === null) {
+            actualSlot = candidate;
+            probed = true;
+            break;
+          }
+        }
+        if (!probed) {
+          log.error({ coin: symbol }, 'Aux merkle tree full — no empty slot');
+          continue;
+        }
       }
 
-      slots[slot] = {
+      slots[actualSlot] = {
         symbol,
         hash: Buffer.from(auxBlock.hash, 'hex'),
       };

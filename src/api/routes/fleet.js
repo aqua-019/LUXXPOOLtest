@@ -63,6 +63,9 @@ function registerFleetRoutes(app, deps) {
   app.post('/api/v1/fleet/ip', requireAdminAuth, (req, res) => {
     const { ip } = req.body;
     if (!ip) return res.status(400).json({ error: API.validation.IP_REQUIRED, code: 'VALIDATION_ERROR' });
+    if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(ip)) {
+      return res.status(400).json({ error: 'Invalid IP or CIDR format', code: 'VALIDATION_ERROR' });
+    }
 
     const success = fleetManager.addIp(ip);
     log.info({ ip }, 'Fleet IP added via API');
