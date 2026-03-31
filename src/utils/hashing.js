@@ -64,6 +64,23 @@ function scryptHash(input) {
   });
 }
 
+/**
+ * Async Scrypt hash — offloads to libuv thread pool (non-blocking)
+ * Set UV_THREADPOOL_SIZE=16 for higher concurrency under load
+ * @param {Buffer} input - 80-byte block header
+ * @returns {Promise<Buffer>} 32-byte hash
+ */
+function scryptHashAsync(input) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(input, input, SCRYPT_KEY_LEN, {
+      N: SCRYPT_N,
+      r: SCRYPT_R,
+      p: SCRYPT_P,
+      maxmem: 256 * SCRYPT_N * SCRYPT_R,
+    }, (err, result) => err ? reject(err) : resolve(result));
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
 // DIFFICULTY & TARGET
 // ═══════════════════════════════════════════════════════════
@@ -100,6 +117,7 @@ function bitsToTarget(bits) {
   const bitsInt = parseInt(bits, 16);
   const exponent = (bitsInt >> 24) & 0xff;
   const mantissa = bitsInt & 0x7fffff;
+  if (exponent > 33) throw new Error(`Invalid bits exponent: ${exponent}`);
 
   let target;
   if (exponent <= 3) {
@@ -199,11 +217,7 @@ function calculateMerkleRoot(coinbaseHash, branches) {
  * @returns {Buffer}
  */
 function reverseBuffer(buf) {
-  const reversed = Buffer.allocUnsafe(buf.length);
-  for (let i = 0; i < buf.length; i++) {
-    reversed[i] = buf[buf.length - 1 - i];
-  }
-  return reversed;
+  return Buffer.from(buf).reverse();
 }
 
 /**
@@ -257,6 +271,7 @@ module.exports = {
   sha256,
   sha256d,
   scryptHash,
+  scryptHashAsync,
 
   // Difficulty / Target
   difficultyToTarget,

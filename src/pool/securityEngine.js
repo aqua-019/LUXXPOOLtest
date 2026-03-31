@@ -212,11 +212,12 @@ class ProtocolLayer {
     }
 
     // Escalate on repeated violations
-    const violations = this.violations.get(ip) || 0;
-    if (violations >= 5) {
+    const violationEntry = this.violations.get(ip);
+    const violationCount = violationEntry ? violationEntry.count : 0;
+    if (violationCount >= 5) {
       return {
         result: RESULT.BAN,
-        reason: `Protocol abuse: ${violations} violations from this IP`,
+        reason: `Protocol abuse: ${violationCount} violations from this IP`,
         layer: 2,
       };
     }
@@ -225,9 +226,13 @@ class ProtocolLayer {
   }
 
   _recordViolation(ip, type) {
-    const count = (this.violations.get(ip) || 0) + 1;
-    this.violations.set(ip, count);
-    log.warn({ ip, type, count }, 'L2 protocol violation');
+    if (!this.violations.has(ip)) {
+      this.violations.set(ip, { count: 0, lastViolation: Date.now() });
+    }
+    const entry = this.violations.get(ip);
+    entry.count++;
+    entry.lastViolation = Date.now();
+    log.warn({ ip, type, count: entry.count }, 'L2 protocol violation');
   }
 
   clearViolations(ip) {
@@ -235,9 +240,13 @@ class ProtocolLayer {
   }
 
   cleanup() {
-    // Called periodically — remove stale entries
-    // In production this would be Redis TTL-backed
-    if (this.violations.size > 10000) this.violations.clear();
+    // Remove entries older than 1 hour instead of nuclear .clear()
+    const cutoff = Date.now() - 3600000;
+    for (const [ip, entry] of this.violations) {
+      if (typeof entry === 'number' || !entry.lastViolation || entry.lastViolation < cutoff) {
+        this.violations.delete(ip);
+      }
+    }
   }
 }
 
@@ -633,6 +642,15 @@ class RateLimitLayer {
     const cutoff = Date.now() - 120000;
     for (const [id, ts] of this.shareTimestamps) {
       if (!ts.some(t => t > cutoff)) this.shareTimestamps.delete(id);
+    }
+    // Clean up stale connection timestamps
+    for (const [ip, ts] of this.connTimestamps) {
+      const recent = ts.filter(t => t > cutoff);
+      if (recent.length === 0) {
+        this.connTimestamps.delete(ip);
+      } else {
+        this.connTimestamps.set(ip, recent);
+      }
     }
   }
 }

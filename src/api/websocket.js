@@ -172,9 +172,19 @@ class PoolWebSocketServer {
         const channel = msg.channel;
         if (!channel) return;
 
-        // Admin channel requires auth
+        // Admin channel requires auth (with rate limiting)
         if (channel === 'admin') {
           if (!this.adminToken || msg.token !== this.adminToken) {
+            const ip = client.ip || 'unknown';
+            if (!this._authFailures) this._authFailures = new Map();
+            const fails = (this._authFailures.get(ip) || []).filter(t => Date.now() - t < 60000);
+            fails.push(Date.now());
+            this._authFailures.set(ip, fails);
+            if (fails.length >= 5) {
+              this._send(ws, { type: 'error', message: 'Too many failed auth attempts' });
+              ws.close();
+              return;
+            }
             this._send(ws, { type: 'error', message: 'Admin authentication required' });
             return;
           }

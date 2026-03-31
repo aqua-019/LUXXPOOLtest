@@ -20,6 +20,7 @@ class RpcClient {
     this.port     = opts.port;
     this.auth     = Buffer.from(`${opts.user}:${opts.password}`).toString('base64');
     this.coin     = opts.coin || 'litecoin';
+    this.timeout  = opts.timeout || 30000;
     this.log      = createLogger(`rpc:${this.coin}`);
     this.idCounter = 0;
   }
@@ -50,7 +51,7 @@ class RpcClient {
           'Content-Length':  Buffer.byteLength(payload),
           'Authorization':  `Basic ${this.auth}`,
         },
-        timeout: 30000,
+        timeout: this.timeout,
       }, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
@@ -97,9 +98,19 @@ class RpcClient {
     return this.call('getblocktemplate', [{ capabilities }]);
   }
 
-  /** Submit a solved block */
+  /** Submit a solved block (retries on transient failure) */
   async submitBlock(blockHex) {
-    return this.call('submitblock', [blockHex]);
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.call('submitblock', [blockHex]);
+      } catch (err) {
+        if (attempt === maxRetries) throw err;
+        const delay = 100 * Math.pow(2, attempt - 1); // 100ms, 200ms, 400ms
+        this.log.warn({ attempt, err: err.message }, `submitblock failed, retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
   }
 
   /** Get blockchain info */

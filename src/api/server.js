@@ -31,7 +31,7 @@ function createApiServer(deps) {
   app.use(helmet());
   app.use(cors({ origin: config.api.corsOrigin }));
   app.use(compression());
-  app.use(express.json());
+  app.use(express.json({ limit: '10kb' }));
 
   const limiter = rateLimit({
     windowMs: config.api.rateLimitWindow,
@@ -270,8 +270,8 @@ function createApiServer(deps) {
   // ── Extended Multi-Coin Routes ──
   registerExtendedRoutes(app, deps);
 
-  // ── Security Routes (v0.4.0) ──
-  if (deps.securityManager) {
+  // ── Security Routes ──
+  if (deps.securityEngine) {
     registerSecurityRoutes(app, deps);
   }
 

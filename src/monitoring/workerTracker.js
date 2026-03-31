@@ -1,5 +1,5 @@
 /**
- * LUXXPOOL v0.4.0 — Worker Tracker
+ * LUXXPOOL — Worker Tracker
  * Granular per-worker statistics, pool-hopping detection,
  * stale share rate monitoring, and automatic difficulty floor.
  */
@@ -220,8 +220,19 @@ class WorkerTracker {
   }
 
   async _persistAll() {
-    for (const [, w] of this.workers) {
-      if (!this.db) return;
+    const now = Date.now();
+    const IDLE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+
+    for (const [id, w] of this.workers) {
+      // Prune workers idle for over 1 hour with no recent shares
+      if (w.lastShareAt && (now - w.lastShareAt) > IDLE_THRESHOLD_MS) {
+        log.info({ worker: w.workerName, idleMs: now - w.lastShareAt }, 'Pruning idle worker');
+        this._persistWorker(w);
+        this.workers.delete(id);
+        continue;
+      }
+
+      if (!this.db) continue;
       try {
         await this.db.query(
           `INSERT INTO workers (miner_id, name, full_name, hashrate, last_share, is_online, ip_address, user_agent)

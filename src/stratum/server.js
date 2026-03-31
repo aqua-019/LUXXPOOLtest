@@ -76,6 +76,13 @@ class StratumClient extends EventEmitter {
 
     this.socket.on('data', (data) => {
       this.lastActivity = Date.now();
+
+      // Check incoming data size before concatenating to prevent memory abuse
+      if (data.length > 10240 || this._buffer.length + data.length > 10240) {
+        log.warn({ ip: this.remoteAddress, dataLen: data.length, bufferLen: this._buffer.length }, 'Oversized message — disconnecting');
+        this.disconnect('buffer overflow');
+        return;
+      }
       this._buffer += data;
 
       // Process line-delimited JSON

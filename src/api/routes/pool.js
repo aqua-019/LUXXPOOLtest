@@ -1,6 +1,6 @@
 const { API } = require('../../ux/copy');
 /**
- * LUXXPOOL v0.4.0 — Pool Optimization Routes
+ * LUXXPOOL — Pool Optimization Routes
  * Health monitoring, worker details, profit estimation, diagnostics
  */
 
@@ -10,7 +10,7 @@ const { createLogger } = require('../../utils/logger');
 const log = createLogger('api:pool');
 
 function registerPoolRoutes(app, deps) {
-  const { healthMonitor, workerTracker, hashrateEstimator, rpcClient, stratumServer, soloServer, securityManager, banningManager } = deps;
+  const { healthMonitor, workerTracker, hashrateEstimator, rpcClient, stratumServer, soloServer, securityEngine, banningManager } = deps;
 
   // Full system health
   app.get('/api/v1/health/full', (req, res) => {
@@ -47,6 +47,10 @@ function registerPoolRoutes(app, deps) {
   app.get('/api/v1/estimate/profit', async (req, res) => {
     const hashrate = parseFloat(req.query.hashrate || '0'); // H/s
     const fee = parseFloat(req.query.fee || '0.02');
+
+    if (!isFinite(hashrate) || hashrate < 0 || !isFinite(fee) || fee < 0 || fee > 1) {
+      return res.status(400).json({ error: 'Invalid hashrate or fee parameter' });
+    }
 
     try {
       const miningInfo = await rpcClient.getMiningInfo();
@@ -92,16 +96,16 @@ function registerPoolRoutes(app, deps) {
   });
 
   // Diagnostics: full pool state
-  app.get('/api/v1/diagnostics', (req, res) => {
+  app.get('/api/v1/diagnostics', async (req, res) => {
     res.json({
-      version: '0.4.0',
+      version: '0.7.2',
       uptime: process.uptime(),
       memory: process.memoryUsage(),
       stratum: {
         pool: { clients: stratumServer?.clients.size || 0, totalConnections: stratumServer?.stats.totalConnections || 0, blocksFound: stratumServer?.stats.blocksFound || 0 },
         solo: { clients: soloServer?.clients.size || 0, totalConnections: soloServer?.stats.totalConnections || 0 },
       },
-      security: securityManager ? securityManager.getDashboard() : 'not active',
+      security: securityEngine ? await securityEngine.getStatus() : 'not active',
       banning: { bannedCount: banningManager?.getBannedCount() || 0 },
       hashrate: hashrateEstimator ? HashrateEstimator.formatHashrate(hashrateEstimator.getPoolHashrate()) : '0',
       health: healthMonitor ? healthMonitor.getStatus() : 'not active',

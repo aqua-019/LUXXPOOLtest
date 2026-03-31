@@ -373,10 +373,12 @@ class FleetManager {
   }
 
   _parseCidr(cidr) {
-    const [ip, bits] = cidr.split('/');
-    const mask = parseInt(bits);
+    const [ip, bitsStr] = cidr.split('/');
+    if (!bitsStr) throw new Error(`Invalid CIDR: missing /bits — ${cidr}`);
+    const bits = parseInt(bitsStr);
+    if (isNaN(bits) || bits < 0 || bits > 32) throw new Error(`Invalid CIDR bits: ${bitsStr} (must be 0–32)`);
     const ipNum = this._ipToInt(ip);
-    const maskNum = mask === 0 ? 0 : (~0 << (32 - mask)) >>> 0;
+    const maskNum = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
     return { network: (ipNum & maskNum) >>> 0, mask: maskNum };
   }
 
