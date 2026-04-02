@@ -135,11 +135,21 @@ async function main() {
   });
 
   const ltcAlive = await ltcRpc.ping();
-  if (ltcAlive) {
-    const info = await ltcRpc.getBlockchainInfo();
-    log.info({ chain: info.chain, blocks: info.blocks }, 'Litecoin daemon connected');
-  } else {
+  if (!ltcAlive) {
     log.fatal('Cannot connect to Litecoin daemon — aborting');
+    process.exit(1);
+  }
+
+  const ltcInfo = await ltcRpc.getBlockchainInfo();
+  log.info({ chain: ltcInfo.chain, blocks: ltcInfo.blocks, headers: ltcInfo.headers }, 'Litecoin daemon connected');
+
+  // Block startup if daemon is still performing initial block download
+  if (ltcInfo.initialblockdownload) {
+    const pct = ((ltcInfo.blocks / ltcInfo.headers) * 100).toFixed(2);
+    log.fatal(
+      { blocks: ltcInfo.blocks, headers: ltcInfo.headers, progress: `${pct}%` },
+      'Litecoin daemon is still syncing — pool cannot start until sync completes'
+    );
     process.exit(1);
   }
 
