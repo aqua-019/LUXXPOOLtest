@@ -171,7 +171,7 @@ class PaymentProcessor extends EventEmitter {
    * @returns {Object<string, number>} address → total share difficulty
    */
   async _calculatePPLNS(block) {
-    const windowBlocks = this.config.pplnsWindow || 2;
+    const windowBlocks = this.config.pplnsWindow || 100;
     const startHeight = Math.max(0, block.height - windowBlocks);
 
     try {
@@ -298,6 +298,18 @@ class PaymentProcessor extends EventEmitter {
         }
 
         this.emit('paymentSent', { txid, payments: batch, block });
+
+        // Fee transparency ledger — public audit trail
+        const grossReward = block.reward / 1e8;
+        const netDistributed = Object.values(batch).reduce((a, b) => a + b, 0);
+        const feeAmount = grossReward - netDistributed;
+        const feePct = grossReward > 0 ? feeAmount / grossReward : 0;
+        await this.db.query(
+          `INSERT INTO block_fee_ledger (coin, block_height, gross_reward, pool_fee_pct, pool_fee_amount, net_distributed, miner_count, payout_txid)
+           VALUES ('LTC', $1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (coin, block_height) DO NOTHING`,
+          [block.height, grossReward, parseFloat(feePct.toFixed(4)), parseFloat(feeAmount.toFixed(8)), parseFloat(netDistributed.toFixed(8)), Object.keys(batch).length, txid]
+        ).catch(err => log.warn({ err: err.message }, 'Fee ledger insert failed'));
       }
 
     } catch (err) {

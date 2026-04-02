@@ -28,12 +28,13 @@ class AuxPowEngine extends EventEmitter {
   /**
    * @param {object} auxConfigs - Map of symbol → { host, port, user, password, address }
    */
-  constructor(auxConfigs = {}) {
+  constructor(auxConfigs = {}, deps = {}) {
     super();
 
     this.chains = new Map();     // symbol → { rpc, config, currentBlock, ... }
     this.auxBlocks = new Map();  // symbol → { hash, target, chainid }
     this.pollInterval = null;
+    this.redis = deps.redis || null;
 
     // Initialize RPC clients for each configured aux chain
     const enabledAux = getAuxChains();
@@ -317,6 +318,20 @@ class AuxPowEngine extends EventEmitter {
    * Submit a solved auxiliary block
    */
   async _submitAuxBlock(symbol, chain, parentHeader, coinbaseHex, coinbaseMerkleBranch) {
+    // Redis distributed lock — prevent duplicate submissions for same aux block
+    const lockKey = `auxpow:lock:${symbol}`;
+    if (this.redis) {
+      try {
+        const acquired = await this.redis.set(lockKey, '1', 'EX', 5, 'NX');
+        if (!acquired) {
+          log.debug({ coin: symbol }, 'AuxPoW submission locked — skipping duplicate');
+          return;
+        }
+      } catch (err) {
+        log.warn({ coin: symbol, err: err.message }, 'AuxPoW lock acquire failed — proceeding without lock');
+      }
+    }
+
     try {
       const auxBlock = chain.currentBlock;
 
@@ -360,6 +375,11 @@ class AuxPowEngine extends EventEmitter {
       }
     } catch (err) {
       log.error({ coin: symbol, err: err.message }, 'Aux block submission failed');
+    } finally {
+      // Release distributed lock
+      if (this.redis) {
+        this.redis.del(lockKey).catch(() => {});
+      }
     }
   }
 

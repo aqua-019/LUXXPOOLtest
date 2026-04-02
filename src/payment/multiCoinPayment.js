@@ -146,7 +146,7 @@ class MultiCoinPaymentProcessor extends EventEmitter {
   }
 
   async _getShareDistribution(block) {
-    const windowBlocks = this.config.pplnsWindow || 2;
+    const windowBlocks = this.config.pplnsWindow || 100;
     const startHeight = Math.max(0, block.height - windowBlocks);
 
     const result = await this.db.query(
@@ -232,6 +232,18 @@ class MultiCoinPaymentProcessor extends EventEmitter {
         }
 
         this.emit('paymentSent', { symbol, txid, batch, block });
+
+        // Fee transparency ledger
+        const grossReward = block.reward;
+        const netDistributed = Object.values(batch).reduce((a, b) => a + b, 0);
+        const feeAmount = grossReward - netDistributed;
+        const feePct = grossReward > 0 ? feeAmount / grossReward : 0;
+        await this.db.query(
+          `INSERT INTO block_fee_ledger (coin, block_height, gross_reward, pool_fee_pct, pool_fee_amount, net_distributed, miner_count, payout_txid)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (coin, block_height) DO NOTHING`,
+          [symbol, block.height, grossReward, parseFloat(feePct.toFixed(4)), parseFloat(feeAmount.toFixed(8)), parseFloat(netDistributed.toFixed(8)), Object.keys(batch).length, txid]
+        ).catch(err => log.warn({ coin: symbol, err: err.message }, 'Fee ledger insert failed'));
       }
     } catch (err) {
       log.error({ coin: symbol, err: err.message }, 'Batch payment failed');

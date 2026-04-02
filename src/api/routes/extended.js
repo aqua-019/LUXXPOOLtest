@@ -294,6 +294,92 @@ function registerExtendedRoutes(app, deps) {
       res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
     }
   });
+
+  // ═══════════════════════════════════════════════════════
+  // SHARE AUDIT LOG — Per-miner share history
+  // ═══════════════════════════════════════════════════════
+
+  app.get('/api/v1/miner/:address/shares/audit', async (req, res) => {
+    const { address } = req.params;
+    const limit = Math.min(parseInt(req.query.limit || '200'), 500);
+    const status = req.query.status; // optional filter: 'valid', 'rejected', 'stale'
+
+    try {
+      let query = `SELECT worker, difficulty, height, status, rejection_reason, created_at
+                   FROM shares WHERE address = $1`;
+      const params = [address];
+
+      if (status && ['valid', 'rejected', 'stale'].includes(status)) {
+        query += ` AND status = $2`;
+        params.push(status);
+      }
+
+      query += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
+      params.push(limit);
+
+      const result = await db.query(query, params);
+
+      // Summary stats
+      const statsResult = await db.query(
+        `SELECT status, COUNT(*) as count
+         FROM shares WHERE address = $1
+         GROUP BY status`,
+        [address]
+      );
+
+      const stats = {};
+      for (const row of statsResult.rows) {
+        stats[row.status] = parseInt(row.count);
+      }
+
+      res.json({ address, stats, shares: result.rows });
+    } catch (err) {
+      log.error({ err: err.message }, 'Share audit query error');
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // FEE TRANSPARENCY — Public audit ledger
+  // ═══════════════════════════════════════════════════════
+
+  app.get('/api/v1/pool/fee-audit', async (req, res) => {
+    const coin = (req.query.coin || 'LTC').toUpperCase();
+    const limit = Math.min(parseInt(req.query.limit || '50'), 200);
+
+    try {
+      const result = await db.query(
+        `SELECT coin, block_height, gross_reward, pool_fee_pct, pool_fee_amount,
+                net_distributed, miner_count, payout_txid, created_at
+         FROM block_fee_ledger
+         WHERE coin = $1
+         ORDER BY block_height DESC
+         LIMIT $2`,
+        [coin, limit]
+      );
+
+      const summary = await db.query(
+        `SELECT coin, COUNT(*) as blocks,
+                SUM(gross_reward) as total_gross,
+                SUM(pool_fee_amount) as total_fees,
+                SUM(net_distributed) as total_distributed,
+                AVG(pool_fee_pct) as avg_fee_pct
+         FROM block_fee_ledger
+         WHERE coin = $1
+         GROUP BY coin`,
+        [coin]
+      );
+
+      res.json({
+        coin,
+        summary: summary.rows[0] || { blocks: 0, total_gross: 0, total_fees: 0, total_distributed: 0, avg_fee_pct: 0 },
+        ledger: result.rows,
+      });
+    } catch (err) {
+      log.error({ err: err.message }, 'Fee audit query error');
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
+  });
 }
 
 module.exports = { registerExtendedRoutes };
