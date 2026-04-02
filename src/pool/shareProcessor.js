@@ -55,11 +55,13 @@ class ShareProcessor extends EventEmitter {
       // ── Step 0: Validate share field formats ──
       if (!/^[0-9a-fA-F]{8}$/.test(nonce)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid nonce format');
+        this._recordShare(client, share, null, 'rejected', 'bad nonce').catch(() => {});
         this.emit('invalidShare', client, share, 'bad nonce');
         return;
       }
       if (!/^[0-9a-fA-F]{8}$/.test(extraNonce2)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid extraNonce2 format');
+        this._recordShare(client, share, null, 'rejected', 'bad extraNonce2').catch(() => {});
         this.emit('invalidShare', client, share, 'bad extraNonce2');
         return;
       }
@@ -69,6 +71,7 @@ class ShareProcessor extends EventEmitter {
       if (!jobEntry) {
         client.rejectShare(share.id, STRATUM.errors.JOB_NOT_FOUND.code, STRATUM.errors.JOB_NOT_FOUND.message);
         client.shares.stale++;
+        this._recordShare(client, share, null, 'stale', 'job not found').catch(() => {});
         this.emit('staleShare', client, share);
         return;
       }
@@ -104,6 +107,7 @@ class ShareProcessor extends EventEmitter {
       const shareTarget = difficultyToTarget(share.difficulty);
       if (!meetsTarget(hash, shareTarget)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, STRATUM.errors.LOW_DIFFICULTY.message);
+        this._recordShare(client, share, template, 'rejected', 'low difficulty').catch(() => {});
         this.emit('invalidShare', client, share, 'low difficulty');
         return;
       }
@@ -278,35 +282,37 @@ class ShareProcessor extends EventEmitter {
   // DATABASE RECORDING
   // ═══════════════════════════════════════════════════════
 
-  async _recordShare(client, share, template) {
+  async _recordShare(client, share, template, status = 'valid', reason = null) {
     const shareData = {
       worker: client.workerName,
       address: client.minerAddress,
       difficulty: share.difficulty,
-      height: template.height,
+      height: template ? template.height : 0,
       ip: client.remoteAddress,
       timestamp: Date.now(),
     };
 
-    // Redis: increment share counter for PPLNS window
-    try {
-      const pipeline = this.redis.pipeline();
-      pipeline.hincrby(this.keys.roundShares(template.height), client.minerAddress, share.difficulty);
-      pipeline.incr(this.keys.totalShares());
-      pipeline.hincrby(this.keys.workerShares(client.minerAddress), 'total', share.difficulty);
-      pipeline.set(this.keys.workerLastShare(client.minerAddress), Date.now());
-      await pipeline.exec();
-    } catch (err) {
-      log.error({ err: err.message }, 'Redis share recording failed');
+    // Redis: increment share counter for PPLNS window (valid shares only)
+    if (status === 'valid' && template) {
+      try {
+        const pipeline = this.redis.pipeline();
+        pipeline.hincrby(this.keys.roundShares(template.height), client.minerAddress, share.difficulty);
+        pipeline.incr(this.keys.totalShares());
+        pipeline.hincrby(this.keys.workerShares(client.minerAddress), 'total', share.difficulty);
+        pipeline.set(this.keys.workerLastShare(client.minerAddress), Date.now());
+        await pipeline.exec();
+      } catch (err) {
+        log.error({ err: err.message }, 'Redis share recording failed');
+      }
     }
 
-    // PostgreSQL: persistent share record
+    // PostgreSQL: persistent share record (all statuses)
     if (this.db) {
       try {
         await this.db.query(
-          `INSERT INTO shares (worker, address, difficulty, height, ip, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())`,
-          [shareData.worker, shareData.address, shareData.difficulty, shareData.height, shareData.ip]
+          `INSERT INTO shares (worker, address, difficulty, height, ip, status, rejection_reason, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          [shareData.worker, shareData.address, shareData.difficulty, shareData.height, shareData.ip, status, reason]
         );
       } catch (err) {
         log.error({ err: err.message }, 'PostgreSQL share recording failed');
@@ -322,8 +328,8 @@ class ShareProcessor extends EventEmitter {
 
     try {
       await this.db.query(
-        `INSERT INTO blocks (height, hash, reward, worker, address, difficulty, confirmed, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, false, NOW())`,
+        `INSERT INTO blocks (height, hash, reward, worker, address, difficulty, is_solo, solo_fee, confirmed, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NOW())`,
         [
           template.height,
           blockHash,
@@ -331,6 +337,8 @@ class ShareProcessor extends EventEmitter {
           client.workerName,
           client.minerAddress,
           bitsToDifficulty(template.bits).toFixed(8),
+          client.isSolo || false,
+          client.soloFee || 0,
         ]
       );
     } catch (err) {

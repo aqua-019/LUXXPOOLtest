@@ -49,6 +49,7 @@ const BlockConfirmationWatcher = require('./workers/blockWatcher');
 const { SCRYPT_COINS }      = require('../config/coins');
 const { STRATUM, OPS }      = require('./ux/copy');
 const RedisKeys             = require('./utils/redisKeys');
+const prom                  = require('./monitoring/prometheus');
 
 // v0.7.0: New modules
 const MinerRegistry          = require('./pool/minerRegistry');
@@ -175,7 +176,7 @@ async function main() {
   }
 
   // ─── AuxPoW Engine ──────────────────────────────────────
-  const auxPowEngine = new AuxPowEngine(auxConfigs);
+  const auxPowEngine = new AuxPowEngine(auxConfigs, { redis });
   await auxPowEngine.start(5000);
 
   // ─── Block Template Manager ─────────────────────────────
@@ -204,13 +205,20 @@ async function main() {
 
   // Merged mining: rebuild template when aux blocks change so the
   // new aux merkle root is embedded in the next coinbase scriptSig.
-  auxPowEngine.on('newAuxBlock', async (symbol) => {
-    try {
-      await templateManager.updateTemplate();
-      log.debug({ coin: symbol }, 'Template refreshed for aux block update');
-    } catch (err) {
-      log.error({ coin: symbol, err: err.message }, 'Template refresh on aux block failed');
-    }
+  // Debounced 200ms — multiple aux chains can fire near-simultaneously
+  // on the same 5s poll cycle; batch into a single template rebuild.
+  let _auxRefreshTimer = null;
+  auxPowEngine.on('newAuxBlock', (symbol) => {
+    log.debug({ coin: symbol }, 'Aux block updated — queuing template refresh');
+    clearTimeout(_auxRefreshTimer);
+    _auxRefreshTimer = setTimeout(async () => {
+      try {
+        await templateManager.updateTemplate();
+        log.debug('Template refreshed after aux block update(s)');
+      } catch (err) {
+        log.error({ err: err.message }, 'Template refresh on aux block failed');
+      }
+    }, 200);
   });
 
   await blockNotifier.start();
@@ -559,7 +567,11 @@ async function main() {
   // WIRING: Share Results → Security + Hashrate
   // ═══════════════════════════════════════════════════════
 
+  // Track miners who've had wallet slots created (avoid DB query on every share)
+  const _walletCheckedMiners = new Set();
+
   shareProcessor.on('validShare', (client, share, auxProof) => {
+    prom.recordShare('valid');
     if (!client._isFleet) {
       banningManager.recordValidShare(client.remoteAddress);
       // L4 fingerprinting now handled by SecurityEngine.onShare()
@@ -575,6 +587,22 @@ async function main() {
       validShares: (fleetManager.fleetMiners.get(client.id)?.validShares || 0) + 1,
     });
 
+    // ── Auto-register aux wallet slots on first share from this miner ──
+    if (client.minerAddress && !_walletCheckedMiners.has(client.minerAddress)) {
+      _walletCheckedMiners.add(client.minerAddress);
+      const enabledAux = Object.entries(SCRYPT_COINS)
+        .filter(([, c]) => c.enabled && c.role === 'auxiliary')
+        .map(([sym]) => sym);
+      for (const coin of enabledAux) {
+        dbQuery.query(
+          `INSERT INTO miner_wallets (miner_address, coin, coin_address, updated_at)
+           VALUES ($1, $2, NULL, NOW())
+           ON CONFLICT (miner_address, coin) DO NOTHING`,
+          [client.minerAddress, coin]
+        ).catch(() => {}); // fire-and-forget, non-blocking
+      }
+    }
+
     // ── Merged mining: check share against all aux chain targets ──
     if (auxProof && auxPowEngine) {
       auxPowEngine.checkAuxChains(
@@ -588,6 +616,7 @@ async function main() {
   });
 
   shareProcessor.on('invalidShare', (client, share, reason) => {
+    prom.recordShare('rejected');
     workerTracker.onInvalidShare(client);
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
@@ -599,6 +628,7 @@ async function main() {
   });
 
   shareProcessor.on('staleShare', (client) => {
+    prom.recordShare('stale');
     workerTracker.onStaleShare(client);
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
@@ -606,6 +636,7 @@ async function main() {
   });
 
   shareProcessor.on('duplicateShare', (client) => {
+    prom.recordShare('duplicate');
     if (!client._isFleet) {
       banningManager.recordViolation(client.remoteAddress, 'duplicate share');
     }
@@ -616,6 +647,7 @@ async function main() {
   // ═══════════════════════════════════════════════════════
 
   shareProcessor.on('blockFound', async (template, client) => {
+    prom.recordBlock('LTC', 'parent');
     log.info({
       height: template.height,
       worker: client.workerName,

@@ -23,6 +23,13 @@ class RpcClient {
     this.timeout  = opts.timeout || 30000;
     this.log      = createLogger(`rpc:${this.coin}`);
     this.idCounter = 0;
+
+    // Circuit breaker state
+    this.consecutiveFailures = 0;
+    this.circuitOpen = false;
+    this.circuitOpenedAt = 0;
+    this._circuitThreshold = opts.circuitThreshold || 5;
+    this._circuitCooldownMs = opts.circuitCooldownMs || 30000;
   }
 
   /**
@@ -32,6 +39,16 @@ class RpcClient {
    * @returns {Promise<any>}
    */
   async call(method, params = []) {
+    // Circuit breaker: reject immediately if circuit is open and cooldown hasn't elapsed
+    if (this.circuitOpen) {
+      const elapsed = Date.now() - this.circuitOpenedAt;
+      if (elapsed < this._circuitCooldownMs) {
+        return Promise.reject(new Error(`RPC circuit open for ${this.coin} (${this.consecutiveFailures} failures, ${Math.round((this._circuitCooldownMs - elapsed) / 1000)}s remaining)`));
+      }
+      // Cooldown elapsed — allow one probe call through
+      this.log.info({ method }, 'RPC circuit half-open — probing');
+    }
+
     const id = ++this.idCounter;
 
     const payload = JSON.stringify({
@@ -64,6 +81,7 @@ class RpcClient {
               this.log.error({ method, code: parsed.error.code }, `RPC error: ${parsed.error.message}`);
               reject(err);
             } else {
+              this._onSuccess();
               resolve(parsed.result);
             }
           } catch (e) {
@@ -74,12 +92,14 @@ class RpcClient {
       });
 
       req.on('error', (err) => {
+        this._onFailure();
         this.log.error({ method, err: err.message }, 'RPC connection error');
         reject(err);
       });
 
       req.on('timeout', () => {
         req.destroy();
+        this._onFailure();
         this.log.error({ method }, 'RPC request timed out');
         reject(new Error(`RPC ${method} timed out`));
       });
@@ -87,6 +107,27 @@ class RpcClient {
       req.write(payload);
       req.end();
     });
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // CIRCUIT BREAKER
+  // ═══════════════════════════════════════════════════════
+
+  _onSuccess() {
+    if (this.circuitOpen) {
+      this.log.info('RPC circuit closed — daemon recovered');
+    }
+    this.consecutiveFailures = 0;
+    this.circuitOpen = false;
+  }
+
+  _onFailure() {
+    this.consecutiveFailures++;
+    if (!this.circuitOpen && this.consecutiveFailures >= this._circuitThreshold) {
+      this.circuitOpen = true;
+      this.circuitOpenedAt = Date.now();
+      this.log.error({ failures: this.consecutiveFailures }, 'RPC circuit OPEN — daemon unreachable');
+    }
   }
 
   // ═══════════════════════════════════════════════════════

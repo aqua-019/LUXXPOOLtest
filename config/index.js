@@ -75,7 +75,7 @@ const config = {
     maxBatch:  parseInt(process.env.PAYMENT_MAX_BATCH || '100'),
     txFee:     parseFloat(process.env.PAYMENT_TX_FEE || '0.001'),
     scheme:    process.env.PAYMENT_SCHEME || 'pplns',
-    pplnsWindow: parseInt(process.env.PPLNS_WINDOW || '10'),
+    pplnsWindow: parseInt(process.env.PPLNS_WINDOW || '100'),
   },
 
   api: {
