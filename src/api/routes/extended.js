@@ -135,16 +135,82 @@ function registerExtendedRoutes(app, deps) {
 
     try {
       const result = await db.query(
-        'SELECT coin, coin_address FROM miner_wallets WHERE miner_address = $1',
+        'SELECT coin, coin_address, updated_at FROM miner_wallets WHERE miner_address = $1',
         [address]
       );
 
       const wallets = {};
       for (const row of result.rows) {
-        wallets[row.coin] = row.coin_address;
+        wallets[row.coin] = { address: row.coin_address, updatedAt: row.updated_at };
       }
 
-      res.json({ address, wallets });
+      // List aux coins that still need wallet registration
+      const registeredCoins = new Set(result.rows.map(r => r.coin));
+      const unregistered = Object.entries(SCRYPT_COINS)
+        .filter(([sym, conf]) => conf.enabled && conf.role === 'auxiliary' && !registeredCoins.has(sym))
+        .map(([sym]) => sym);
+
+      res.json({ address, wallets, unregistered });
+    } catch (err) {
+      res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
+    }
+  });
+
+  // Bulk wallet registration — register multiple coin addresses at once
+  app.post('/api/v1/miner/:address/wallets/bulk', async (req, res) => {
+    const { address } = req.params;
+    const { wallets } = req.body; // expects { DOGE: "D...", BELLS: "B...", ... }
+
+    if (!wallets || typeof wallets !== 'object' || Array.isArray(wallets)) {
+      return res.status(400).json({ error: 'Body must contain { wallets: { COIN: "address", ... } }' });
+    }
+
+    const results = { registered: [], errors: [] };
+
+    for (const [coin, coinAddress] of Object.entries(wallets)) {
+      const upperCoin = coin.toUpperCase();
+
+      if (!SCRYPT_COINS[upperCoin]) {
+        results.errors.push({ coin: upperCoin, error: `Unknown coin: ${upperCoin}` });
+        continue;
+      }
+      if (!coinAddress || coinAddress.length < 20 || coinAddress.length > 64 || !/^[a-zA-Z0-9]+$/.test(coinAddress)) {
+        results.errors.push({ coin: upperCoin, error: 'Invalid address format' });
+        continue;
+      }
+
+      try {
+        await db.query(
+          `INSERT INTO miner_wallets (miner_address, coin, coin_address, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (miner_address, coin) DO UPDATE SET coin_address = $3, updated_at = NOW()`,
+          [address, upperCoin, coinAddress]
+        );
+        results.registered.push({ coin: upperCoin, address: coinAddress });
+      } catch (err) {
+        results.errors.push({ coin: upperCoin, error: err.message });
+      }
+    }
+
+    res.json(results);
+  });
+
+  // Delete a registered wallet for a specific coin
+  app.delete('/api/v1/miner/:address/wallets/:coin', async (req, res) => {
+    const { address, coin } = req.params;
+    const upperCoin = coin.toUpperCase();
+
+    try {
+      const result = await db.query(
+        'DELETE FROM miner_wallets WHERE miner_address = $1 AND coin = $2',
+        [address, upperCoin]
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: `No wallet registered for ${upperCoin}` });
+      }
+
+      res.json({ success: true, coin: upperCoin, message: 'Wallet removed' });
     } catch (err) {
       res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
     }
