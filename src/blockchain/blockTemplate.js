@@ -27,6 +27,7 @@ class BlockTemplateManager extends EventEmitter {
     super();
     this.rpc = rpcClient;
     this.poolConfig = poolConfig;
+    this.auxPowEngine = poolConfig.auxPowEngine || null;
 
     this.currentTemplate = null;
     this.currentJobId = null;
@@ -255,12 +256,18 @@ class BlockTemplateManager extends EventEmitter {
     // Coinbase script (scriptSig)
     // Block height serialization (BIP34)
     const heightBuf = this._serializeBlockHeight(template.height);
-    
+
     // Pool tag
     const poolTag = Buffer.from(`/LUXXPOOL/${template.height}/${this.currentJobId}/`, 'ascii');
-    
-    // scriptSig = height + poolTag + [EXTRANONCE GOES HERE]
-    const scriptSigPre = Buffer.concat([heightBuf, poolTag]);
+
+    // Merged mining: embed aux merkle root in coinbase scriptSig
+    // Format: fabe6d6d + auxMerkleRoot(32) + merkleSize(4) + merkleNonce(4) = 44 bytes
+    const auxData = this.auxPowEngine ? this.auxPowEngine.getCoinbaseAuxData() : null;
+
+    // scriptSig = height + poolTag + [auxData] + [EXTRANONCE GOES HERE]
+    const scriptSigPre = auxData
+      ? Buffer.concat([heightBuf, poolTag, auxData])
+      : Buffer.concat([heightBuf, poolTag]);
     const scriptSigLen = scriptSigPre.length + this.extraNonce1Size + this.extraNonce2Size;
 
     parts.push(serializeVarInt(scriptSigLen));

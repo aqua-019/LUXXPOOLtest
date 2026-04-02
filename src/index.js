@@ -192,6 +192,17 @@ async function main() {
     }
   });
 
+  // Merged mining: rebuild template when aux blocks change so the
+  // new aux merkle root is embedded in the next coinbase scriptSig.
+  auxPowEngine.on('newAuxBlock', async (symbol) => {
+    try {
+      await templateManager.updateTemplate();
+      log.debug({ coin: symbol }, 'Template refreshed for aux block update');
+    } catch (err) {
+      log.error({ coin: symbol, err: err.message }, 'Template refresh on aux block failed');
+    }
+  });
+
   await blockNotifier.start();
 
   // Also poll every 5s as safety net (ZMQ is primary, poll is backup)
@@ -538,7 +549,7 @@ async function main() {
   // WIRING: Share Results → Security + Hashrate
   // ═══════════════════════════════════════════════════════
 
-  shareProcessor.on('validShare', (client, share) => {
+  shareProcessor.on('validShare', (client, share, auxProof) => {
     if (!client._isFleet) {
       banningManager.recordValidShare(client.remoteAddress);
       // L4 fingerprinting now handled by SecurityEngine.onShare()
@@ -553,6 +564,17 @@ async function main() {
       hashrate: client.hashrate,
       validShares: (fleetManager.fleetMiners.get(client.id)?.validShares || 0) + 1,
     });
+
+    // ── Merged mining: check share against all aux chain targets ──
+    if (auxProof && auxPowEngine) {
+      auxPowEngine.checkAuxChains(
+        auxProof.hash,
+        auxProof.headerBuffer,
+        auxProof.coinbaseHex,
+        auxProof.merkleBranches,
+        client
+      ).catch(err => log.error({ err: err.message }, 'AuxPoW check error'));
+    }
   });
 
   shareProcessor.on('invalidShare', (client, share, reason) => {

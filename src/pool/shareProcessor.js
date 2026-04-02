@@ -128,7 +128,7 @@ class ShareProcessor extends EventEmitter {
       // ── Step 7: Record share ──
       await this._recordShare(client, share, template);
 
-      // ── Step 8: Check for block solution ──
+      // ── Step 8: Check for block solution (LTC parent chain) ──
       const networkTarget = bitsToTarget(template.bits);
       if (meetsTarget(hash, networkTarget)) {
         log.info({
@@ -141,7 +141,16 @@ class ShareProcessor extends EventEmitter {
         await this._submitBlock(template, headerBuffer, extraNonce1, extraNonce2, ntime, nonce, client, jobId);
       }
 
-      this.emit('validShare', client, share);
+      // ── Step 9: Emit valid share with aux-proof data for merged mining ──
+      // Aux chains have lower difficulty — every valid share could solve an aux block.
+      const job = this.templateManager.getJob(jobId);
+      const { coinbaseHex } = this.templateManager.buildCoinbaseForJob(jobId, extraNonce1, extraNonce2);
+      this.emit('validShare', client, share, {
+        hash,
+        headerBuffer,
+        coinbaseHex,
+        merkleBranches: job ? job.merkleBranches : [],
+      });
 
     } catch (err) {
       log.error({ err: err.message, worker: client.workerName }, 'Share processing error');
