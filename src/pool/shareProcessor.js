@@ -322,8 +322,8 @@ class ShareProcessor extends EventEmitter {
 
     try {
       await this.db.query(
-        `INSERT INTO blocks (height, hash, reward, worker, address, difficulty, confirmed, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, false, NOW())`,
+        `INSERT INTO blocks (height, hash, reward, worker, address, difficulty, is_solo, solo_fee, confirmed, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, NOW())`,
         [
           template.height,
           blockHash,
@@ -331,6 +331,8 @@ class ShareProcessor extends EventEmitter {
           client.workerName,
           client.minerAddress,
           bitsToDifficulty(template.bits).toFixed(8),
+          client.isSolo || false,
+          client.soloFee || 0,
         ]
       );
     } catch (err) {

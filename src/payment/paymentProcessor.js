@@ -63,6 +63,9 @@ class PaymentProcessor extends EventEmitter {
     }, PAYMENT_TIMEOUT_MS);
 
     try {
+      // Step 0: Retry any previously failed payments
+      await this._retryFailedPayments();
+
       // Step 1: Check for confirmed blocks ready for payout
       const confirmedBlocks = await this._getConfirmedBlocks();
       if (confirmedBlocks.length === 0) {
@@ -205,6 +208,15 @@ class PaymentProcessor extends EventEmitter {
     const poolFeeRate = this.config.poolFee || 0.02;
     const fleetAddresses = this.config.fleetAddresses || new Set();
 
+    // Solo blocks: a single miner found the block and pays a flat solo fee.
+    // The entire reward (minus fee) goes to that miner regardless of shares.
+    if (block.is_solo && block.address) {
+      const soloFeeRate = parseFloat(block.solo_fee) || 0.01;
+      const net = parseFloat((rewardLTC * (1 - soloFeeRate)).toFixed(8));
+      log.info({ reward: rewardLTC, soloFee: soloFeeRate, address: block.address }, 'Solo block payment');
+      return net > 0 ? { [block.address]: net } : {};
+    }
+
     let totalFee = 0;
     const payments = {};
 
@@ -299,6 +311,60 @@ class PaymentProcessor extends EventEmitter {
           [address, amount, block.height]
         );
       }
+    }
+  }
+
+  /**
+   * Retry payments that failed in a previous cycle.
+   * Groups failed records by block_height and resubmits as batches.
+   */
+  async _retryFailedPayments() {
+    try {
+      const result = await this.db.query(
+        `SELECT address, amount, block_height
+         FROM payments
+         WHERE status = 'failed' AND coin = 'LTC'
+         ORDER BY block_height ASC, address ASC
+         LIMIT 200`
+      );
+
+      if (result.rows.length === 0) return;
+
+      log.warn({ count: result.rows.length }, 'Retrying failed payments');
+
+      // Group by block_height so we can call _executeBatchPayment per block
+      const byBlock = new Map();
+      for (const row of result.rows) {
+        if (!byBlock.has(row.block_height)) byBlock.set(row.block_height, {});
+        byBlock.get(row.block_height)[row.address] = parseFloat(row.amount);
+      }
+
+      for (const [height, batch] of byBlock) {
+        // Mark them pending before retry attempt
+        await this.db.query(
+          `UPDATE payments SET status = 'pending' WHERE status = 'failed' AND coin = 'LTC' AND block_height = $1`,
+          [height]
+        );
+
+        try {
+          const txid = await this.rpc.sendMany('', batch);
+          await this.db.query(
+            `UPDATE payments SET status = 'sent', txid = $1
+             WHERE status = 'pending' AND coin = 'LTC' AND block_height = $2`,
+            [txid, height]
+          );
+          log.info({ txid, height, count: Object.keys(batch).length }, 'Failed payments retried successfully');
+        } catch (err) {
+          // Revert to failed so they're picked up next cycle
+          await this.db.query(
+            `UPDATE payments SET status = 'failed' WHERE status = 'pending' AND coin = 'LTC' AND block_height = $1`,
+            [height]
+          );
+          log.error({ height, err: err.message }, 'Payment retry failed — will try again next cycle');
+        }
+      }
+    } catch (err) {
+      log.error({ err: err.message }, 'Failed payment retry query error');
     }
   }
 

@@ -39,7 +39,7 @@ class WorkerTracker {
       minerAddress: client.minerAddress,
       workerTag: client.workerTag,
       ip: client.remoteAddress,
-      userAgent,
+      userAgent: userAgent ? String(userAgent).slice(0, 256) : null,
       connectedAt: Date.now(),
       lastShareAt: null,
 

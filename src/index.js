@@ -204,13 +204,20 @@ async function main() {
 
   // Merged mining: rebuild template when aux blocks change so the
   // new aux merkle root is embedded in the next coinbase scriptSig.
-  auxPowEngine.on('newAuxBlock', async (symbol) => {
-    try {
-      await templateManager.updateTemplate();
-      log.debug({ coin: symbol }, 'Template refreshed for aux block update');
-    } catch (err) {
-      log.error({ coin: symbol, err: err.message }, 'Template refresh on aux block failed');
-    }
+  // Debounced 200ms — multiple aux chains can fire near-simultaneously
+  // on the same 5s poll cycle; batch into a single template rebuild.
+  let _auxRefreshTimer = null;
+  auxPowEngine.on('newAuxBlock', (symbol) => {
+    log.debug({ coin: symbol }, 'Aux block updated — queuing template refresh');
+    clearTimeout(_auxRefreshTimer);
+    _auxRefreshTimer = setTimeout(async () => {
+      try {
+        await templateManager.updateTemplate();
+        log.debug('Template refreshed after aux block update(s)');
+      } catch (err) {
+        log.error({ err: err.message }, 'Template refresh on aux block failed');
+      }
+    }, 200);
   });
 
   await blockNotifier.start();
