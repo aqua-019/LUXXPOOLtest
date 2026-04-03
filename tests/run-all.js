@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 
 /**
- * LUXXPOOL v0.6.0 — Run All Tests
- * Executes Emulation A+B (mining + fleet) and Emulation C (critical path)
+ * LUXXPOOL v0.8.1 — Run All Tests
+ * Executes Emulation A+B, C, and D (full pool lifecycle)
  */
 
 const { execSync } = require('child_process');
 const path = require('path');
 
 console.log('═══════════════════════════════════════════════════════');
-console.log(' LUXXPOOL v0.6.0 — FULL TEST SUITE');
+console.log(' LUXXPOOL v0.8.1 — FULL TEST SUITE');
 console.log('═══════════════════════════════════════════════════════\n');
 
 const tests = [
   { name: 'Emulation A+B (Mining Pipeline + Fleet)', file: 'emulation.js' },
   { name: 'Emulation C (Address · Security · Redis · VarDiff)', file: 'emulation-c.js' },
+  { name: 'Emulation D (Full Pool Lifecycle · 40 Fleet L9s)', file: 'emulation-d.js' },
 ];
 
 let totalPassed = 0;
