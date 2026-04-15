@@ -347,10 +347,6 @@ Effort: Low — capture the actual block hash from `submitBlock` response and st
 
 ### Priority: Medium
 
-**TD-007: No Prometheus metrics endpoint**
-Impact: Production observability relies entirely on log parsing. No time-series dashboards.
-Effort: Medium — add `prom-client` package and expose metrics at `GET /metrics`.
-
 **TD-008: PPLNS window default too small (2 blocks)**
 Impact: New miners joining right before a block find get disproportionate payout. Reduces pool fairness for small miners.
 Effort: Trivial — change default in `config/index.js` and `.env.example`.

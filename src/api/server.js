@@ -14,7 +14,6 @@ const { registerSecurityRoutes } = require('./routes/security');
 const { registerPoolRoutes } = require('./routes/pool');
 const { registerFleetRoutes } = require('./routes/fleet');
 const { registerDashboardRoutes } = require('./routes/dashboard');
-const { registerMetricsEndpoint } = require('../monitoring/prometheus');
 const { API } = require('../ux/copy');
 const config = require('../../config');
 
@@ -284,9 +283,6 @@ function createApiServer(deps) {
 
   // ── Dashboard Routes (v0.7.0) ──
   registerDashboardRoutes(app, deps);
-
-  // ── Prometheus Metrics ──
-  registerMetricsEndpoint(app);
 
   // ── 404 ──
   app.use((req, res) => {

@@ -248,27 +248,6 @@ VarDiff adjusts every 90 seconds targeting 1 share per 15 seconds. Model-aware f
 
 ## Monitoring
 
-### Prometheus Metrics
-
-```
-GET /metrics
-
-# Pool-level gauges
-luxxpool_hashrate_hps 680000000000
-luxxpool_active_miners 43
-luxxpool_active_workers 44
-luxxpool_lockdown_level 0
-
-# Share counters
-luxxpool_shares_total{status="valid"} 142857
-luxxpool_shares_total{status="rejected"} 23
-luxxpool_shares_total{status="stale"} 7
-
-# Block counters
-luxxpool_blocks_found_total{coin="LTC",type="parent"} 3
-luxxpool_blocks_found_total{coin="DOGE",type="aux"} 47
-```
-
 ### WebSocket Real-Time
 
 ```
@@ -327,7 +306,6 @@ Channels:
 | GET | `/api/v1/estimate/miners` | Pre-built estimates for common ASICs |
 | GET | `/api/v1/health/full` | Full daemon/redis/postgres health |
 | GET | `/api/v1/diagnostics` | Complete pool diagnostics |
-| GET | `/metrics` | Prometheus metrics export |
 
 ### Admin Endpoints (Bearer token required)
 
@@ -368,7 +346,6 @@ npm start    # Runs migrations automatically on first boot
 
 # 4. Verify
 curl http://localhost:8080/health
-curl http://localhost:8080/metrics
 ```
 
 ---
@@ -407,7 +384,7 @@ luxxpool/
 │   │   ├── paymentProcessor.js         # LTC PPLNS + retry + fee ledger
 │   │   └── multiCoinPayment.js         # Aux coin payouts with wallet lookup
 │   ├── api/
-│   │   ├── server.js                   # Express + Prometheus + rate limiting
+│   │   ├── server.js                   # Express + rate limiting
 │   │   ├── websocket.js                # Real-time WebSocket (4 channels)
 │   │   └── routes/
 │   │       ├── extended.js             # Coins, aux, wallets, fee-audit, share-audit
@@ -416,7 +393,6 @@ luxxpool/
 │   │       ├── security.js             # Security engine + reputation
 │   │       └── dashboard.js            # 8 dashboard data endpoints
 │   ├── monitoring/
-│   │   ├── prometheus.js               # Prometheus /metrics exporter
 │   │   ├── hashrateEstimator.js        # 10-min rolling hashrate
 │   │   ├── statsCollector.js           # Periodic DB snapshots
 │   │   ├── workerTracker.js            # Per-worker stats + idle pruning
@@ -478,8 +454,7 @@ npm test
 | Node.js | 20+ | Pool runtime |
 | PostgreSQL | 16 | Persistent storage (19+ tables) |
 | Redis | 7 | Share dedup, rate limiting, balance tracking |
-| Express | 4 | REST API + Prometheus metrics |
-| prom-client | 15 | Prometheus metrics export |
+| Express | 4 | REST API + rate limiting |
 | ws | 8 | WebSocket real-time updates |
 | pino | 8 | Structured JSON logging |
 

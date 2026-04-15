@@ -89,13 +89,6 @@ const config = {
     rateLimitMax:   parseInt(process.env.API_RATE_LIMIT_MAX || '100'),
   },
 
-  monitoring: {
-    enabled:  process.env.METRICS_ENABLED === 'true',
-    port:     parseInt(process.env.METRICS_PORT || '9100'),
-    logLevel: process.env.LOG_LEVEL || 'info',
-    logFile:  process.env.LOG_FILE || '/var/log/luxxpool/pool.log',
-  },
-
   security: {
     maxConnectionsPerIp: parseInt(process.env.DDOS_MAX_CONNECTIONS_PER_IP || '5'),
     banDuration:         parseInt(process.env.DDOS_BAN_DURATION || '3600'),
