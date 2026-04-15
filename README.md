@@ -346,7 +346,6 @@ npm start    # Runs migrations automatically on first boot
 
 # 4. Verify
 curl http://localhost:8080/health
-curl http://localhost:8080/metrics
 ```
 
 ---
