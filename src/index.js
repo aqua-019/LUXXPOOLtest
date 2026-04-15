@@ -49,7 +49,6 @@ const BlockConfirmationWatcher = require('./workers/blockWatcher');
 const { SCRYPT_COINS }      = require('../config/coins');
 const { STRATUM, OPS }      = require('./ux/copy');
 const RedisKeys             = require('./utils/redisKeys');
-const prom                  = require('./monitoring/prometheus');
 
 // v0.7.0: New modules
 const MinerRegistry          = require('./pool/minerRegistry');
