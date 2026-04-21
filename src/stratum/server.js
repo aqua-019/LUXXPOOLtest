@@ -8,6 +8,7 @@ const net = require('net');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 const VarDiffManager = require('./vardiff');
 const { STRATUM } = require('../ux/copy');
 
@@ -116,6 +117,7 @@ class StratumClient extends EventEmitter {
           this._handleMessage(message);
         } catch (err) {
           log.warn({ ip: this.remoteAddress, raw: line.substring(0, 100) }, 'Malformed stratum message');
+          poolLogger.emit('CONN_004', { ip: this.remoteAddress, raw: line.substring(0, 100) });
           this.shares.invalid++;
         }
       }
@@ -140,6 +142,7 @@ class StratumClient extends EventEmitter {
 
     this.socket.on('timeout', () => {
       log.info({ ip: this.remoteAddress, worker: this.workerName }, 'Connection timeout');
+      poolLogger.emit('CONN_003', { ip: this.remoteAddress, worker: this.workerName, address: this.minerAddress });
       this.disconnect('timeout');
     });
 
@@ -229,6 +232,7 @@ class StratumClient extends EventEmitter {
     const [workerName, password] = msg.params || [];
 
     if (!workerName) {
+      poolLogger.emit('CONN_006', { ip: this.remoteAddress, reason: 'missing worker name' });
       this._sendResponse(msg.id, false);
       this._sendError(msg.id, STRATUM.errors.UNAUTHORIZED.code, STRATUM.errors.UNAUTHORIZED.message);
       return;
@@ -246,6 +250,7 @@ class StratumClient extends EventEmitter {
       const validation = validateAddress(this.minerAddress);
       if (!validation.valid) {
         log.warn({ address: this.minerAddress, error: validation.error }, 'Rejected — invalid LTC address');
+        poolLogger.emit('CONN_006', { address: this.minerAddress, ip: this.remoteAddress, reason: validation.error });
         this._sendResponse(msg.id, false);
         this._sendError(msg.id, STRATUM.errors.UNAUTHORIZED.code, 'Invalid Litecoin address — check worker format');
         return;
@@ -262,6 +267,7 @@ class StratumClient extends EventEmitter {
       worker: this.workerName,
       address: this.minerAddress,
     }, 'Worker authorized');
+    poolLogger.emit('CONN_005', { worker: this.workerName, address: this.minerAddress, ip: this.remoteAddress });
 
     this._sendResponse(msg.id, true);
     this.emit('authorize', this, workerName, password);
@@ -507,6 +513,7 @@ class StratumServer extends EventEmitter {
       extraNonce1,
       activeClients: this.clients.size,
     }, 'New miner connection');
+    poolLogger.emit('CONN_001', { ip, clientId: client.id, activeClients: this.clients.size });
 
     // ── Event wiring ──
 
@@ -543,6 +550,7 @@ class StratumServer extends EventEmitter {
         uptime: Date.now() - c.connectedAt,
         activeClients: this.clients.size,
       }, 'Miner disconnected');
+      poolLogger.emit('CONN_002', { worker: c.workerName, ip, address: c.minerAddress, uptime: Date.now() - c.connectedAt });
 
       this.emit('disconnect', c);
     });
@@ -560,6 +568,7 @@ class StratumServer extends EventEmitter {
       }
     }
     log.info({ jobId: job.jobId, miners: count }, 'Job broadcast');
+    poolLogger.emit('BLOCK_005', { jobId: job.jobId, miners: count, height: job.height });
   }
 
   /**

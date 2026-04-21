@@ -39,8 +39,8 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "50m"
-        max-file: "5"
+        max-size: "100m"   # v0.8.2: increased from 50m — event log is verbose
+        max-file: "10"     # v0.8.2: increased from 5
     volumes:
       - pool-logs:/var/log/luxxpool
       # Mount SSL certs if using stratum+ssl

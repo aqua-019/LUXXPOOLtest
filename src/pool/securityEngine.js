@@ -38,6 +38,7 @@
 const crypto      = require('crypto');
 const EventEmitter = require('events');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 
 const log = createLogger('security-engine');
 
@@ -1234,11 +1235,31 @@ class SecurityEngine extends EventEmitter {
       if (this.deps.banningManager && ctx.ip) {
         this.deps.banningManager.ban(ctx.ip, finding.reason);
       }
+      // v0.8.2 event codes
+      poolLogger.emit('SEC_002', { ip: ctx.ip, address: ctx.address, reason: finding.reason, layer: finding.layer });
+      if (finding.layer === 4) {
+        poolLogger.emit('SEC_004', { address: ctx.address, ip: ctx.ip, reason: finding.reason });
+      }
     } else if (finding.result === RESULT.FLAG) {
       log.info({ ...ctx, reason: finding.reason, layer: finding.layer }, '⚑  Security flag');
       this.emit('flag', event);
+      // v0.8.2 event codes
+      if (finding.layer === 4) {
+        poolLogger.emit('SEC_004', { address: ctx.address, ip: ctx.ip, reason: finding.reason });
+      } else if (finding.layer === 5 && /sybil/i.test(finding.reason || '')) {
+        poolLogger.emit('SEC_003', { ip: ctx.ip, reason: finding.reason });
+      } else if (finding.layer === 6) {
+        poolLogger.emit('SEC_001', { ip: ctx.ip, clientId: ctx.clientId, reason: finding.reason });
+      } else if (finding.layer === 7 && /address/i.test(finding.reason || '')) {
+        poolLogger.emit('SEC_005', { address: ctx.address, ip: ctx.ip, reason: finding.reason });
+      }
     } else if (finding.result === RESULT.REJECT) {
       log.debug({ ...ctx, reason: finding.reason, layer: finding.layer }, '✗  Share rejected');
+      if (finding.layer === 6) {
+        poolLogger.emit('SEC_001', { ip: ctx.ip, clientId: ctx.clientId, reason: finding.reason });
+      } else if (finding.layer === 7 && /address/i.test(finding.reason || '')) {
+        poolLogger.emit('SEC_005', { address: ctx.address, ip: ctx.ip, reason: finding.reason });
+      }
     }
 
     return finding;

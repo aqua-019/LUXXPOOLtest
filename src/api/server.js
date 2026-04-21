@@ -9,6 +9,8 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
+const minerRegistry = require('../pool/minerRegistry');
 const { registerExtendedRoutes } = require('./routes/extended');
 const { registerSecurityRoutes } = require('./routes/security');
 const { registerPoolRoutes } = require('./routes/pool');
@@ -284,6 +286,12 @@ function createApiServer(deps) {
   // ── Dashboard Routes (v0.7.0) ──
   registerDashboardRoutes(app, deps);
 
+  // ── v0.8.2: ASIC model catalog ──
+  app.get('/api/v1/models', (req, res) => {
+    const models = minerRegistry.listModels();
+    res.json({ count: models.length, models });
+  });
+
   // ── 404 ──
   app.use((req, res) => {
     res.status(API.errors.NOT_FOUND.status).json(API.errors.NOT_FOUND);
@@ -292,6 +300,7 @@ function createApiServer(deps) {
   // ── Error handler ──
   app.use((err, req, res, _next) => {
     log.error({ err: err.message, path: req.path }, 'Unhandled API error');
+    try { poolLogger.emit('SYS_008', { route: req.path, error: err.message }); } catch {}
     res.status(API.errors.INTERNAL.status).json(API.errors.INTERNAL);
   });
 

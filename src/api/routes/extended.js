@@ -5,7 +5,7 @@ const { API } = require('../../ux/copy');
  */
 
 const { createLogger } = require('../../utils/logger');
-const { SCRYPT_COINS } = require('../../config/coins');
+const { SCRYPT_COINS } = require('../../../config/coins');
 const HashrateEstimator = require('../../monitoring/hashrateEstimator');
 
 const log = createLogger('api:ext');

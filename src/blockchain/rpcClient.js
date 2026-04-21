@@ -5,6 +5,7 @@
 
 const http = require('http');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 
 class RpcClient {
   /**
@@ -79,6 +80,9 @@ class RpcClient {
               const err = new Error(`RPC ${method}: ${parsed.error.message}`);
               err.code = parsed.error.code;
               this.log.error({ method, code: parsed.error.code }, `RPC error: ${parsed.error.message}`);
+              if (method === 'getblocktemplate') {
+                poolLogger.emit('DAEMON_008', { chain: this._chainLabel(), method, error: parsed.error.message });
+              }
               reject(err);
             } else {
               this._onSuccess();
@@ -94,6 +98,7 @@ class RpcClient {
       req.on('error', (err) => {
         this._onFailure();
         this.log.error({ method, err: err.message }, 'RPC connection error');
+        poolLogger.emit('DAEMON_003', { chain: this._chainLabel(), error: err.message });
         reject(err);
       });
 
@@ -101,6 +106,7 @@ class RpcClient {
         req.destroy();
         this._onFailure();
         this.log.error({ method }, 'RPC request timed out');
+        poolLogger.emit('DAEMON_002', { chain: this._chainLabel(), rpc: method });
         reject(new Error(`RPC ${method} timed out`));
       });
 
@@ -113,9 +119,15 @@ class RpcClient {
   // CIRCUIT BREAKER
   // ═══════════════════════════════════════════════════════
 
+  _chainLabel() {
+    return (this.coin || 'LTC').toUpperCase();
+  }
+
   _onSuccess() {
     if (this.circuitOpen) {
       this.log.info('RPC circuit closed — daemon recovered');
+      poolLogger.emit('DAEMON_007', { chain: this._chainLabel() });
+      poolLogger.emit('DAEMON_005', { chain: this._chainLabel() });
     }
     this.consecutiveFailures = 0;
     this.circuitOpen = false;
@@ -127,6 +139,7 @@ class RpcClient {
       this.circuitOpen = true;
       this.circuitOpenedAt = Date.now();
       this.log.error({ failures: this.consecutiveFailures }, 'RPC circuit OPEN — daemon unreachable');
+      poolLogger.emit('DAEMON_006', { chain: this._chainLabel(), failures: this.consecutiveFailures });
     }
   }
 

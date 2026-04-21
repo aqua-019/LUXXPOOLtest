@@ -5,6 +5,7 @@
 
 const EventEmitter = require('events');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 
 const log = createLogger('payments');
 
@@ -188,6 +189,12 @@ class PaymentProcessor extends EventEmitter {
         shares[row.address] = parseFloat(row.total_diff);
       }
 
+      poolLogger.emit('PAY_001', {
+        block_height: block.height,
+        miners: Object.keys(shares).length,
+        window: windowBlocks,
+      });
+
       return shares;
     } catch (err) {
       log.error({ err: err.message }, 'PPLNS calculation failed');
@@ -265,6 +272,11 @@ class PaymentProcessor extends EventEmitter {
           batchSize: batchAddresses.length,
           totalAmount: Object.values(batch).reduce((a, b) => a + b, 0),
         }, 'Sending batch payment');
+        poolLogger.emit('PAY_002', {
+          batchSize: batchAddresses.length,
+          block_height: block.height,
+          totalAmount: Object.values(batch).reduce((a, b) => a + b, 0),
+        });
 
         // Record pending payments BEFORE sending (idempotency guard)
         const pendingIds = [];
@@ -280,6 +292,12 @@ class PaymentProcessor extends EventEmitter {
         const txid = await this.rpc.sendMany('', batch);
 
         log.info({ txid, batchSize: batchAddresses.length }, 'Batch payment sent');
+        poolLogger.emit('PAY_003', {
+          txid,
+          batchSize: batchAddresses.length,
+          amount: Object.values(batch).reduce((a, b) => a + b, 0),
+          block_height: block.height,
+        });
 
         // Mark pending payments as sent with txid
         for (const id of pendingIds) {
@@ -314,6 +332,7 @@ class PaymentProcessor extends EventEmitter {
 
     } catch (err) {
       log.error({ err: err.message }, 'Batch payment execution failed');
+      poolLogger.emit('PAY_005', { block_height: block.height, error: err.message });
 
       // Record failed payments
       for (const [address, amount] of Object.entries(payments)) {
