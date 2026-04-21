@@ -15,6 +15,7 @@
 const crypto = require('crypto');
 const EventEmitter = require('events');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 const { sha256d, reverseBuffer, reverseHex } = require('../utils/hashing');
 const RpcClient = require('./rpcClient');
 const { getAuxChains } = require('../../config/coins');
@@ -231,6 +232,8 @@ class AuxPowEngine extends EventEmitter {
 
     const auxMerkleRoot = level[0];
 
+    poolLogger.emit('AUX_001', { chains: auxBlocks.length, merkleSize });
+
     return {
       auxMerkleRoot,
       auxMerkleSize: merkleSize,
@@ -329,6 +332,7 @@ class AuxPowEngine extends EventEmitter {
         }
       } catch (err) {
         log.warn({ coin: symbol, err: err.message }, 'AuxPoW lock acquire failed — proceeding without lock');
+        poolLogger.emit('AUX_004', { chain: symbol, error: err.message });
       }
     }
 
@@ -359,6 +363,7 @@ class AuxPowEngine extends EventEmitter {
           hash: auxBlock.hash,
           blocksFound: chain.blocksFound,
         }, `✅ ${symbol} aux block accepted!`);
+        poolLogger.emit('AUX_002', { chain: symbol, hash: auxBlock.hash, blocksFound: chain.blocksFound });
 
         this.emit('auxBlockFound', symbol, auxBlock, chain);
 
@@ -370,6 +375,7 @@ class AuxPowEngine extends EventEmitter {
           result,
           hash: auxBlock.hash,
         }, `❌ ${symbol} aux block rejected`);
+        poolLogger.emit('AUX_003', { chain: symbol, hash: auxBlock.hash, reason: result });
 
         this.emit('auxBlockRejected', symbol, auxBlock, result);
       }

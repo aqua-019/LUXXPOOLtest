@@ -7,7 +7,7 @@ const pino = require('pino');
 const config = require('../../config');
 
 const logger = pino({
-  level: config.monitoring.logLevel,
+  level: process.env.LOG_LEVEL || (config.monitoring && config.monitoring.logLevel) || 'info',
   transport: config.env === 'development'
     ? { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:HH:MM:ss' } }
     : undefined,

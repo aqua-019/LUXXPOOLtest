@@ -51,7 +51,7 @@ const { STRATUM, OPS }      = require('./ux/copy');
 const RedisKeys             = require('./utils/redisKeys');
 
 // v0.7.0: New modules
-const MinerRegistry          = require('./pool/minerRegistry');
+const minerRegistry          = require('./pool/minerRegistry'); // v0.8.2: singleton instance
 const FirmwareTracker        = require('./pool/firmwareTracker');
 const HashrateOptimizer      = require('./pool/hashrateOptimizer');
 const IpReputation           = require('./pool/ipReputation');
@@ -59,6 +59,11 @@ const ConnectionFingerprint  = require('./pool/connectionFingerprint');
 const EmergencyLockdown      = require('./pool/emergencyLockdown');
 const AuditLog               = require('./pool/auditLog');
 const PoolWebSocketServer    = require('./api/websocket');
+
+// v0.8.2: Logging, metrics, and alert delivery
+const poolLogger             = require('./logging/poolLogger');
+const metricsExporter        = require('./logging/metricsExporter');
+const logDelivery            = require('./logging/logDelivery');
 
 const { version }           = require('../package.json');
 
@@ -98,6 +103,10 @@ async function main() {
   const db = initDatabase();
   await runMigrations();
   const dbQuery = { query };
+
+  // v0.8.2: Wire central pool logger with pg + metrics
+  poolLogger.setPg(db);
+  poolLogger.setMetrics(metricsExporter);
 
   log.info('Connecting to Redis...');
   const redis = new Redis({
@@ -139,6 +148,8 @@ async function main() {
     log.fatal('Cannot connect to Litecoin daemon — aborting');
     process.exit(1);
   }
+
+  poolLogger.emit('DAEMON_001', { chain: 'LTC' });
 
   const ltcInfo = await ltcRpc.getBlockchainInfo();
   log.info({ chain: ltcInfo.chain, blocks: ltcInfo.blocks, headers: ltcInfo.headers }, 'Litecoin daemon connected');
@@ -294,9 +305,9 @@ async function main() {
   log.info('🛡️  Nine-layer security engine ACTIVE');
 
   // ═══════════════════════════════════════════════════════
-  // v0.7.0: MINER MODEL DETECTION & FIRMWARE TRACKING
+  // v0.7.0/v0.8.2: MINER MODEL DETECTION & FIRMWARE TRACKING
+  // minerRegistry is now a module-level singleton (imported above).
   // ═══════════════════════════════════════════════════════
-  const minerRegistry = new MinerRegistry();
 
   const auditLog = new AuditLog({ db: dbQuery }, {
     retentionDays: parseInt(process.env.AUDIT_RETENTION_DAYS || '90'),
@@ -570,7 +581,7 @@ async function main() {
   const _walletCheckedMiners = new Set();
 
   shareProcessor.on('validShare', (client, share, auxProof) => {
-    prom.recordShare('valid');
+    metricsExporter.recordShare('valid');
     if (!client._isFleet) {
       banningManager.recordValidShare(client.remoteAddress);
       // L4 fingerprinting now handled by SecurityEngine.onShare()
@@ -615,7 +626,7 @@ async function main() {
   });
 
   shareProcessor.on('invalidShare', (client, share, reason) => {
-    prom.recordShare('rejected');
+    metricsExporter.recordShare('rejected');
     workerTracker.onInvalidShare(client);
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
@@ -627,7 +638,7 @@ async function main() {
   });
 
   shareProcessor.on('staleShare', (client) => {
-    prom.recordShare('stale');
+    metricsExporter.recordShare('stale');
     workerTracker.onStaleShare(client);
     if (!client._isFleet) {
       banningManager.recordInvalidShare(client.remoteAddress);
@@ -635,7 +646,7 @@ async function main() {
   });
 
   shareProcessor.on('duplicateShare', (client) => {
-    prom.recordShare('duplicate');
+    metricsExporter.recordShare('duplicate');
     if (!client._isFleet) {
       banningManager.recordViolation(client.remoteAddress, 'duplicate share');
     }
@@ -646,7 +657,7 @@ async function main() {
   // ═══════════════════════════════════════════════════════
 
   shareProcessor.on('blockFound', async (template, client) => {
-    prom.recordBlock('LTC', 'parent');
+    metricsExporter.recordBlock('LTC', 'parent');
     log.info({
       height: template.height,
       worker: client.workerName,
@@ -764,9 +775,15 @@ async function main() {
     connectionFingerprint,
   });
 
+  // v0.8.2: Prometheus /metrics endpoint
+  apiApp.get('/metrics', metricsExporter.metricsRoute);
+
   const httpServer = apiApp.listen(config.api.port, config.api.host, () => {
     log.info({ port: config.api.port }, '🌐 API server listening');
   });
+
+  // v0.8.2: WebSocket event stream at /ws/events
+  logDelivery.attach(httpServer);
 
   // v0.7.0: WebSocket server — attach to HTTP server
   const wsServer = new PoolWebSocketServer({
@@ -811,6 +828,9 @@ async function main() {
   // ─── Graceful Shutdown ──────────────────────────────────
   const shutdown = async (signal) => {
     log.info({ signal }, 'Shutting down LUXXPOOL...');
+    poolLogger.emit('SYS_002', { reason: signal });
+    // v0.8.2: Stop log delivery first so in-flight events don't hit a dying socket
+    try { logDelivery.stop(); } catch {}
     // v0.7.0: Stop new modules first
     wsServer.stop();
     hashrateOptimizer.stop();
@@ -868,8 +888,11 @@ async function main() {
   WebSocket:      🔌 /ws (pool, blocks, miner, admin)
   Miner Models:   🔧 ${minerRegistry.getAllModels().length} ASIC profiles loaded
   Redis:          ${redisConnected ? '✅' : '⚠️  degraded'}
+  Metrics:        📊 /metrics  │  Events:  🔌 /ws/events
   ═══════════════════════════════════════════════════════
   `);
+
+  poolLogger.emit('SYS_001', { version, auxChains: Object.keys(auxRpcClients) });
 }
 
 main().catch((err) => {

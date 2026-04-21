@@ -6,6 +6,7 @@
 
 const EventEmitter = require('events');
 const { createLogger } = require('../utils/logger');
+const poolLogger = require('../logging/poolLogger');
 const { STRATUM } = require('../ux/copy');
 const {
   sha256d,
@@ -56,12 +57,14 @@ class ShareProcessor extends EventEmitter {
       if (!/^[0-9a-fA-F]{8}$/.test(nonce)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid nonce format');
         this._recordShare(client, share, null, 'rejected', 'bad nonce').catch(() => {});
+        poolLogger.emit('SHARE_005', { address: client.minerAddress, worker: client.workerName, reason: 'bad nonce' });
         this.emit('invalidShare', client, share, 'bad nonce');
         return;
       }
       if (!/^[0-9a-fA-F]{8}$/.test(extraNonce2)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, 'Invalid extraNonce2 format');
         this._recordShare(client, share, null, 'rejected', 'bad extraNonce2').catch(() => {});
+        poolLogger.emit('SHARE_005', { address: client.minerAddress, worker: client.workerName, reason: 'bad extraNonce2' });
         this.emit('invalidShare', client, share, 'bad extraNonce2');
         return;
       }
@@ -72,6 +75,7 @@ class ShareProcessor extends EventEmitter {
         client.rejectShare(share.id, STRATUM.errors.JOB_NOT_FOUND.code, STRATUM.errors.JOB_NOT_FOUND.message);
         client.shares.stale++;
         this._recordShare(client, share, null, 'stale', 'job not found').catch(() => {});
+        poolLogger.emit('SHARE_002', { address: client.minerAddress, worker: client.workerName, jobId });
         this.emit('staleShare', client, share);
         return;
       }
@@ -82,6 +86,7 @@ class ShareProcessor extends EventEmitter {
       const isDup = await this.dedup.isDuplicate(extraNonce1, extraNonce2, ntime, nonce, jobId);
       if (isDup) {
         client.rejectShare(share.id, STRATUM.errors.DUPLICATE_SHARE.code, STRATUM.errors.DUPLICATE_SHARE.message);
+        poolLogger.emit('SHARE_004', { address: client.minerAddress, worker: client.workerName, nonce });
         this.emit('duplicateShare', client, share);
         return;
       }
@@ -91,6 +96,7 @@ class ShareProcessor extends EventEmitter {
       const now = Math.floor(Date.now() / 1000);
       if (Math.abs(ntimeInt - now) > 600) {
         client.rejectShare(share.id, STRATUM.errors.INVALID_NTIME.code, STRATUM.errors.INVALID_NTIME.message);
+        poolLogger.emit('SHARE_005', { address: client.minerAddress, worker: client.workerName, reason: 'bad ntime' });
         this.emit('invalidShare', client, share, 'bad ntime');
         return;
       }
@@ -108,12 +114,20 @@ class ShareProcessor extends EventEmitter {
       if (!meetsTarget(hash, shareTarget)) {
         client.rejectShare(share.id, STRATUM.errors.LOW_DIFFICULTY.code, STRATUM.errors.LOW_DIFFICULTY.message);
         this._recordShare(client, share, template, 'rejected', 'low difficulty').catch(() => {});
+        poolLogger.emit('SHARE_003', {
+          address: client.minerAddress, worker: client.workerName,
+          submittedDiff: share.difficulty, requiredDiff: client.difficulty,
+        });
         this.emit('invalidShare', client, share, 'low difficulty');
         return;
       }
 
       // ── Step 6: Share is valid ──
       client.acceptShare(share.id);
+      poolLogger.emit('SHARE_001', {
+        address: client.minerAddress, worker: client.workerName,
+        diff: share.difficulty, jobId,
+      });
 
       // Update VarDiff
       const vardiffRatio = client.vardiff.recordShare();
@@ -125,6 +139,15 @@ class ShareProcessor extends EventEmitter {
             oldDiff: client.difficulty,
             newDiff,
           }, 'VarDiff adjustment');
+          const oldDiff = client.difficulty;
+          if (newDiff > oldDiff) {
+            poolLogger.emit('VARDIFF_001', { address: client.minerAddress, worker: client.workerName, from: oldDiff, to: newDiff });
+          } else {
+            poolLogger.emit('VARDIFF_002', { address: client.minerAddress, worker: client.workerName, from: oldDiff, to: newDiff });
+          }
+          if (client.vardiff.maxDiff && newDiff >= client.vardiff.maxDiff) {
+            poolLogger.emit('VARDIFF_004', { address: client.minerAddress, worker: client.workerName, diff: newDiff });
+          }
           client.sendDifficulty(newDiff);
         }
       }
@@ -257,6 +280,8 @@ class ShareProcessor extends EventEmitter {
       const blockHex = Buffer.concat(parts).toString('hex');
 
       // Submit to daemon
+      // BLOCK_001: submission attempt
+      poolLogger.emit('BLOCK_001', { height: template.height, chain: 'LTC' });
       const result = await this.rpc.submitBlock(blockHex);
 
       if (result === null || result === undefined) {
@@ -265,11 +290,19 @@ class ShareProcessor extends EventEmitter {
           worker: client.workerName,
           reward: template.coinbasevalue / 1e8,
         }, '✅ Block accepted by network!');
+        poolLogger.emit('BLOCK_002', {
+          height: template.height,
+          hash: require('../utils/hashing').reverseBuffer(require('../utils/hashing').sha256d(header)).toString('hex'),
+          reward: template.coinbasevalue / 1e8,
+          worker: client.workerName,
+          chain: 'LTC',
+        });
 
         await this._recordBlock(template, client, header);
         this.emit('blockFound', template, client);
       } else {
         log.error({ result, height: template.height }, '❌ Block rejected by network');
+        poolLogger.emit('BLOCK_003', { height: template.height, reason: result, chain: 'LTC' });
         this.emit('blockRejected', template, client, result);
       }
 
