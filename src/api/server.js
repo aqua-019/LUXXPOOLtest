@@ -16,6 +16,7 @@ const { registerSecurityRoutes } = require('./routes/security');
 const { registerPoolRoutes } = require('./routes/pool');
 const { registerFleetRoutes } = require('./routes/fleet');
 const { registerDashboardRoutes } = require('./routes/dashboard');
+const { isAdminRequest } = require('./middleware/adminAuth');
 const { API } = require('../ux/copy');
 const config = require('../../config');
 
@@ -235,9 +236,26 @@ function createApiServer(deps) {
       return res.json({ miners: [] });
     }
 
+    const isAdmin = isAdminRequest(req);
+
     const miners = stratumServer.getClients()
       .filter(c => c.authorized)
-      .map(c => c.toJSON());
+      .map(c => {
+        const j = c.toJSON();
+        if (isAdmin) return j;
+        // Public response: strip identifying fields. The public endpoint
+        // is unauthenticated, so anyone could otherwise enumerate fleet
+        // and miner IPs.
+        delete j.ip;
+        delete j.id;
+        if (typeof j.worker === 'string' && j.worker.length > 12) {
+          j.worker = j.worker.slice(0, 10) + '...';
+        }
+        if (typeof j.address === 'string' && j.address.length > 14) {
+          j.address = j.address.slice(0, 6) + '...' + j.address.slice(-4);
+        }
+        return j;
+      });
 
     res.json({
       count: miners.length,
