@@ -322,6 +322,92 @@ test('VarInt large values', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// C6: AUXPOW MERKLE TREE — INCLUSION PROOFS (C-2)
+// ═══════════════════════════════════════════════════════
+
+console.log('\nC6: AuxPoW Merkle Branches\n');
+
+const AuxPowEngine = require('../src/blockchain/auxpow');
+
+// Helper: instantiate an engine without real chains, populate synthetic ones
+function makeEngineWithChains(chainSpecs) {
+  const eng = new AuxPowEngine({}, {});
+  // chainSpecs: [{ symbol, chainId, hashHex, targetHex }]
+  for (const c of chainSpecs) {
+    eng.chains.set(c.symbol, {
+      config: { name: c.symbol },
+      address: 'Lfixture',
+      currentBlock: { hash: c.hashHex, target: c.targetHex },
+      enabled: true,
+      blocksFound: 0,
+    });
+    eng.auxBlocks.set(c.symbol, {
+      hash: c.hashHex,
+      target: c.targetHex,
+      chainId: c.chainId,
+    });
+  }
+  return eng;
+}
+
+test('buildAuxMerkleTree returns a branch entry for every active chain', () => {
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x01, hashHex: '11'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'BBB', chainId: 0x02, hashHex: '22'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'CCC', chainId: 0x03, hashHex: '33'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'DDD', chainId: 0x04, hashHex: '44'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree !== null, 'Tree should not be null');
+  assert(tree.branches instanceof Map, 'Tree should expose a branches Map');
+  for (const sym of ['AAA', 'BBB', 'CCC', 'DDD']) {
+    assert(tree.branches.has(sym), `Missing branch entry for ${sym}`);
+  }
+});
+
+test('Reconstructing root from leaf + branch + sideMask matches auxMerkleRoot (multi-chain)', () => {
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x11, hashHex: 'aa'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'BBB', chainId: 0x22, hashHex: 'bb'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'CCC', chainId: 0x33, hashHex: 'cc'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'DDD', chainId: 0x44, hashHex: 'dd'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  for (const [sym, info] of tree.branches) {
+    let h = Buffer.from(eng.auxBlocks.get(sym).hash, 'hex');
+    for (let lvl = 0; lvl < info.branch.length; lvl++) {
+      const isRight = (info.sideMask >> lvl) & 1;
+      h = isRight
+        ? sha256d(Buffer.concat([info.branch[lvl], h]))
+        : sha256d(Buffer.concat([h, info.branch[lvl]]));
+    }
+    assert(
+      h.equals(tree.auxMerkleRoot),
+      `Branch reconstruction for ${sym} did not match root`
+    );
+  }
+});
+
+test('Single-chain proof has empty branch when merkleSize=2 with one zero slot', () => {
+  // Force merkleSize=2 by registering exactly one chain
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x01, hashHex: 'ee'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree.auxMerkleSize === 2, `Expected merkleSize=2, got ${tree.auxMerkleSize}`);
+  const info = tree.branches.get('AAA');
+  assert(info.branch.length === 1, `Expected 1-level branch (sibling = zero hash), got ${info.branch.length}`);
+
+  // Verify reconstruction: hash(slot ordering) → root
+  let h = Buffer.from(eng.auxBlocks.get('AAA').hash, 'hex');
+  const isRight = info.sideMask & 1;
+  h = isRight
+    ? sha256d(Buffer.concat([info.branch[0], h]))
+    : sha256d(Buffer.concat([h, info.branch[0]]));
+  assert(h.equals(tree.auxMerkleRoot), 'Single-chain proof did not match root');
+});
+
+// ═══════════════════════════════════════════════════════
 // RESULTS
 // ═══════════════════════════════════════════════════════
 

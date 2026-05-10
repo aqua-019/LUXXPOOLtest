@@ -216,21 +216,43 @@ class AuxPowEngine extends EventEmitter {
       }
     }
 
-    // Build the merkle tree
-    let level = slots.map(s => s.hash);
-    const branches = [];
-
-    while (level.length > 1) {
-      const nextLevel = [];
-      for (let i = 0; i < level.length; i += 2) {
-        const left = level[i];
-        const right = i + 1 < level.length ? level[i + 1] : left;
-        nextLevel.push(sha256d(Buffer.concat([left, right])));
+    // Build the merkle tree, retaining every level so we can derive
+    // per-chain inclusion proofs (branches).
+    const levels = [slots.map(s => s.hash)];
+    while (levels[levels.length - 1].length > 1) {
+      const cur = levels[levels.length - 1];
+      const next = [];
+      for (let i = 0; i < cur.length; i += 2) {
+        const left = cur[i];
+        const right = i + 1 < cur.length ? cur[i + 1] : left;
+        next.push(sha256d(Buffer.concat([left, right])));
       }
-      level = nextLevel;
+      levels.push(next);
     }
 
-    const auxMerkleRoot = level[0];
+    const auxMerkleRoot = levels[levels.length - 1][0];
+
+    // Compute branch path for every active chain (used by the AuxPoW proof).
+    // sideMask bit i is set when our slot is the right child at level i,
+    // matching the daemon's verification routine.
+    const branches = new Map();
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i].symbol === null) continue;
+      const branch = [];
+      let sideMask = 0;
+      let idx = i;
+      for (let lvl = 0; lvl < levels.length - 1; lvl++) {
+        const isRight = (idx & 1) === 1;
+        const siblingIdx = isRight ? idx - 1 : idx + 1;
+        const siblingHash = siblingIdx < levels[lvl].length
+          ? levels[lvl][siblingIdx]
+          : levels[lvl][idx]; // odd-length: pair with self
+        branch.push(siblingHash);
+        if (isRight) sideMask |= (1 << lvl);
+        idx = idx >>> 1;
+      }
+      branches.set(slots[i].symbol, { branch, sideMask, slot: i });
+    }
 
     poolLogger.emit('AUX_001', { chains: auxBlocks.length, merkleSize });
 
@@ -239,6 +261,7 @@ class AuxPowEngine extends EventEmitter {
       auxMerkleSize: merkleSize,
       merkleNonce,
       chainSlots: slots,
+      branches,
     };
   }
 
@@ -292,6 +315,10 @@ class AuxPowEngine extends EventEmitter {
    * @param {object} client - Stratum client for logging
    */
   async checkAuxChains(headerHash, parentHeader, coinbaseHex, coinbaseMerkleBranch, client) {
+    // Build the aux merkle tree once for this share so every chain's proof
+    // is derived from the same tree the parent coinbase was committed to.
+    const tree = this.buildAuxMerkleTree();
+
     for (const [symbol, auxBlock] of this.auxBlocks) {
       const chain = this.chains.get(symbol);
       if (!chain || !chain.enabled || !chain.currentBlock) continue;
@@ -308,8 +335,14 @@ class AuxPowEngine extends EventEmitter {
             hash: reverseBuffer(headerHash).toString('hex').substring(0, 16) + '...',
           }, `🎉 AUX BLOCK FOUND: ${symbol}!`);
 
+          const branchInfo = tree && tree.branches ? tree.branches.get(symbol) : null;
+          if (!branchInfo) {
+            log.warn({ coin: symbol }, 'Aux chain not present in current merkle tree — cannot prove inclusion');
+            continue;
+          }
+
           // Build and submit the AuxPoW proof
-          await this._submitAuxBlock(symbol, chain, parentHeader, coinbaseHex, coinbaseMerkleBranch);
+          await this._submitAuxBlock(symbol, chain, parentHeader, coinbaseHex, coinbaseMerkleBranch, branchInfo);
         }
       } catch (err) {
         log.error({ coin: symbol, err: err.message }, 'Aux chain check error');
@@ -320,7 +353,7 @@ class AuxPowEngine extends EventEmitter {
   /**
    * Submit a solved auxiliary block
    */
-  async _submitAuxBlock(symbol, chain, parentHeader, coinbaseHex, coinbaseMerkleBranch) {
+  async _submitAuxBlock(symbol, chain, parentHeader, coinbaseHex, coinbaseMerkleBranch, auxBranchInfo) {
     // Redis distributed lock — prevent duplicate submissions for same aux block
     const lockKey = `auxpow:lock:${symbol}`;
     if (this.redis) {
@@ -349,7 +382,8 @@ class AuxPowEngine extends EventEmitter {
       const auxPowHex = this._buildAuxPowProof(
         parentHeader,
         coinbaseHex,
-        coinbaseMerkleBranch
+        coinbaseMerkleBranch,
+        auxBranchInfo
       );
 
       // Submit to aux daemon: submitauxblock(blockhash, auxpow)
@@ -390,45 +424,54 @@ class AuxPowEngine extends EventEmitter {
   }
 
   /**
-   * Build the AuxPoW proof hex string for submission
+   * Build the AuxPoW proof hex string for submission.
+   *
+   * @param {Buffer|string} parentHeader   - 80-byte parent block header
+   * @param {string}        coinbaseHex    - serialized coinbase transaction (hex)
+   * @param {Buffer[]}      coinbaseMerkleBranch
+   * @param {{branch: Buffer[], sideMask: number, slot: number}|null} auxBranchInfo
+   *        - per-chain inclusion proof from buildAuxMerkleTree(); null/empty
+   *          means single-chain (branch is empty, sideMask is 0)
    */
-  _buildAuxPowProof(parentHeader, coinbaseHex, coinbaseMerkleBranch) {
+  _buildAuxPowProof(parentHeader, coinbaseHex, coinbaseMerkleBranch, auxBranchInfo) {
     const parts = [];
 
     // Coinbase transaction (serialized)
     parts.push(Buffer.from(coinbaseHex, 'hex'));
 
-    // Block hash (parent header double-SHA256)
-    // Not needed in the proof itself — it's the parent block hash
-
     // Coinbase merkle branch
-    // Number of hashes
     const branchCount = coinbaseMerkleBranch ? coinbaseMerkleBranch.length : 0;
     const countBuf = Buffer.alloc(4);
     countBuf.writeUInt32LE(branchCount);
     parts.push(countBuf);
 
-    // Branch hashes
     if (coinbaseMerkleBranch) {
       for (const hash of coinbaseMerkleBranch) {
         parts.push(Buffer.isBuffer(hash) ? hash : Buffer.from(hash, 'hex'));
       }
     }
 
-    // Branch side mask (bitmask of left/right positions)
+    // Coinbase side mask — coinbase is always index 0 in the parent block
     const sideMask = Buffer.alloc(4);
-    sideMask.writeUInt32LE(0); // Standard: coinbase is always index 0
+    sideMask.writeUInt32LE(0);
     parts.push(sideMask);
 
-    // Aux merkle branch (for the specific chain)
-    // For single-chain merged mining, this is empty
+    // Aux merkle branch (real, derived from buildAuxMerkleTree)
+    const auxBranch = auxBranchInfo && auxBranchInfo.branch ? auxBranchInfo.branch : [];
+    const auxSideMaskValue = auxBranchInfo && typeof auxBranchInfo.sideMask === 'number'
+      ? auxBranchInfo.sideMask
+      : 0;
+
     const auxBranchCount = Buffer.alloc(4);
-    auxBranchCount.writeUInt32LE(0);
+    auxBranchCount.writeUInt32LE(auxBranch.length);
     parts.push(auxBranchCount);
 
-    // Aux branch side mask
+    for (const hash of auxBranch) {
+      parts.push(Buffer.isBuffer(hash) ? hash : Buffer.from(hash, 'hex'));
+    }
+
     const auxSideMask = Buffer.alloc(4);
-    auxSideMask.writeUInt32LE(0);
+    auxSideMask.writeUInt32LE(auxSideMaskValue);
     parts.push(auxSideMask);
 
     // Parent block header (80 bytes)
