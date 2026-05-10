@@ -2,6 +2,14 @@
 
 This file collects operator-facing deployment guidance that lives outside the source tree. Keep entries short, actionable, and dated against the release that introduced them.
 
+## sendmany minconf=1 (v0.8.3, M-2)
+
+The pool now passes `minconf=1` as the third positional argument to every `sendmany` payout call. Without it the wallet defaults to `minconf=0`, meaning it can spend a UTXO from a block we just mined — and if that block is orphaned, the payout transaction becomes invalid and miners aren't paid until the next reorg recovery.
+
+**Wallet compatibility.** The third positional `minconf` argument is supported on both Litecoin Core legacy and descriptor wallets back to 0.21. If you're running a fork or pre-0.21 daemon, verify with `litecoin-cli help sendmany`. Newer Core versions also accept named arguments (`{"minconf": 1}`); we use positional for backwards safety.
+
+**No operator action required** if you're on standard Litecoin Core ≥ 0.21.
+
 ## Hardening: rpcauth migration (v0.8.3)
 
 **Why.** `docker/docker-compose.prod.yml` currently passes `-rpcpassword=${LTC_PASS}` on the `litecoind` command line and the healthcheck. Both are visible to anyone who can `ps aux`, `docker top luxxpool-litecoind`, or read kernel audit logs. A read-only host-level intrusion is enough to leak the wallet RPC password.

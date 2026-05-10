@@ -251,9 +251,21 @@ class RpcClient {
     return this.call('sendtoaddress', [address, amount]);
   }
 
-  /** Send many (batch payouts) */
-  async sendMany(fromAccount, amounts) {
-    return this.call('sendmany', [fromAccount, amounts]);
+  /**
+   * Send many (batch payouts).
+   *
+   * @param {string} fromAccount - Litecoin account label (legacy; '' for default)
+   * @param {object} amounts     - { address: amount, ... } in LTC
+   * @param {number} [minconf=1] - Minimum confirmations on source UTXOs.
+   *        Default 1 prevents the wallet from spending UTXOs that haven't
+   *        even made it into a block yet (which can happen if a recent
+   *        block we mined is later orphaned). Litecoin Core ≥ 0.21
+   *        accepts the same positional arg for descriptor and legacy
+   *        wallets — see docs/engineering/DEPLOYMENT.md for the
+   *        wallet-compatibility note.
+   */
+  async sendMany(fromAccount, amounts, minconf = 1) {
+    return this.call('sendmany', [fromAccount, amounts, minconf]);
   }
 
   /** Create aux block (merged mining) */
