@@ -136,7 +136,7 @@ services:
       -txindex=1
       -rpcuser=luxxpool_rpc
       -rpcpassword=${LTC_PASS}
-      -rpcallowip=0.0.0.0/0
+      -rpcallowip=172.28.0.0/16
       -rpcbind=0.0.0.0
       -rpcport=9332
       -zmqpubhashblock=tcp://0.0.0.0:28332
