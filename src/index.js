@@ -541,12 +541,6 @@ async function main() {
         { id: client.id, ip: client.remoteAddress, address: client.minerAddress },
         {
           ...share,
-          // TODO: Mining cookie anti-hijack is not yet effective. Currently
-          // submittedCookie is the server-issued cookie (always matches itself).
-          // For real protection, cookie bytes must be embedded in the coinbase
-          // scriptSig and validated from the miner's submitted share data.
-          // Stratum v1 has no protocol field for miners to return cookies.
-          submittedCookie: client._miningCookie,
           isFleet: client._isFleet,
           hashrateGhps: client.hashrate,
         }
