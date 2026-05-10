@@ -175,38 +175,37 @@ class AuxPowEngine extends EventEmitter {
     }
 
     // Determine merkle tree size (smallest power of 2 >= chain count)
-    const merkleSize = this._nextPowerOf2(Math.max(auxBlocks.length, 2));
-    const merkleNonce = 0; // Standard merged mining nonce
+    let merkleSize = this._nextPowerOf2(Math.max(auxBlocks.length, 2));
 
-    // Allocate slots for each chain based on chain ID
-    const slots = new Array(merkleSize).fill(null);
-
-    for (const [symbol, auxBlock] of auxBlocks) {
-      const slot = this._getAuxSlot(auxBlock.chainId, merkleSize, merkleNonce);
-
-      // Linear probing on slot collision
-      let actualSlot = slot;
-      if (slots[actualSlot] !== null) {
-        log.warn({ coin: symbol, slot, existing: slots[actualSlot].symbol }, 'Aux merkle slot collision — probing');
-        let probed = false;
-        for (let j = 1; j < merkleSize; j++) {
-          const candidate = (slot + j) % merkleSize;
-          if (slots[candidate] === null) {
-            actualSlot = candidate;
-            probed = true;
-            break;
-          }
+    // Find a merkleNonce that produces no slot collisions for this chain set.
+    // Linear probing produced slots that didn't match what _getAuxSlot returns,
+    // so the daemon (which recomputes the expected slot from chainId + nonce)
+    // would always reject. Rotating the nonce is the standard approach.
+    const MAX_NONCE_TRIES = 65536;
+    let merkleNonce = 0;
+    let slots = null;
+    while (slots === null) {
+      for (; merkleNonce < MAX_NONCE_TRIES; merkleNonce++) {
+        const candidate = new Array(merkleSize).fill(null);
+        let collision = false;
+        for (const [symbol, auxBlock] of auxBlocks) {
+          const slot = this._getAuxSlot(auxBlock.chainId, merkleSize, merkleNonce);
+          if (candidate[slot] !== null) { collision = true; break; }
+          candidate[slot] = {
+            symbol,
+            hash: Buffer.from(auxBlock.hash, 'hex'),
+          };
         }
-        if (!probed) {
-          log.error({ coin: symbol }, 'Aux merkle tree full — no empty slot');
-          continue;
-        }
+        if (!collision) { slots = candidate; break; }
       }
-
-      slots[actualSlot] = {
-        symbol,
-        hash: Buffer.from(auxBlock.hash, 'hex'),
-      };
+      if (slots === null) {
+        // Exhausted nonce space at this size — double the tree and retry.
+        const doubled = merkleSize * 2;
+        log.warn({ chains: auxBlocks.length, merkleSize, doubled },
+                 'Aux merkle: no collision-free nonce at current size — doubling tree');
+        merkleSize = doubled;
+        merkleNonce = 0;
+      }
     }
 
     // Fill empty slots with zero hashes

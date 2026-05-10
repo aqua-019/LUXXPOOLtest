@@ -388,6 +388,59 @@ test('Reconstructing root from leaf + branch + sideMask matches auxMerkleRoot (m
   }
 });
 
+test('Slot collision is escaped without linear probing (C-3)', () => {
+  // Pick chainIds that all map to the same slot for nonce=0, merkleSize=4.
+  // After C-3, the engine must escape the collision by either rotating
+  // merkleNonce or doubling the tree size — the post-condition is that
+  // every chain's placed slot matches _getAuxSlot(cid, size, nonce).
+  const probeEng = new AuxPowEngine({}, {});
+  const targetSlot = probeEng._getAuxSlot(1, 4, 0);
+  const colliders = [];
+  for (let cid = 1; cid < 1000 && colliders.length < 3; cid++) {
+    if (probeEng._getAuxSlot(cid, 4, 0) === targetSlot) colliders.push(cid);
+  }
+  assert(colliders.length === 3, `Expected to find 3 colliders, got ${colliders.length}`);
+
+  const eng = makeEngineWithChains(colliders.map((cid, i) => ({
+    symbol: `C${i}`,
+    chainId: cid,
+    hashHex: String((i + 1) * 11).padStart(2, '0').repeat(32).slice(0, 64),
+    targetHex: 'ff'.repeat(32),
+  })));
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree !== null, 'Tree built');
+  assert(tree.branches.size === 3, `All 3 chains must be placed, got ${tree.branches.size}`);
+
+  // The daemon recomputes each chain's expected slot from chainId + nonce +
+  // merkleSize. Linear probing breaks this invariant; nonce rotation /
+  // tree doubling preserves it.
+  for (const [sym, info] of tree.branches) {
+    const cid = eng.auxBlocks.get(sym).chainId;
+    const expected = eng._getAuxSlot(cid, tree.auxMerkleSize, tree.merkleNonce);
+    assert(info.slot === expected,
+      `${sym} placed at slot ${info.slot}, but _getAuxSlot(${cid}, ${tree.auxMerkleSize}, ${tree.merkleNonce}) = ${expected}`);
+  }
+});
+
+test('Two colliding chains: merkleNonce rotates rather than doubling tree', () => {
+  // Two chains colliding at nonce=0 size=4 — should be escapable by nonce
+  // rotation alone for most chainId pairs.
+  const probeEng = new AuxPowEngine({}, {});
+  // chainId=2 → slot 0, chainId=6 → slot 0 at nonce=0, size=4
+  const eng = makeEngineWithChains([
+    { symbol: 'A', chainId: 2, hashHex: '11'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'B', chainId: 6, hashHex: '22'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree.branches.size === 2, 'Both chains placed');
+  // Verify daemon-side invariant
+  for (const [sym, info] of tree.branches) {
+    const cid = eng.auxBlocks.get(sym).chainId;
+    assert(info.slot === eng._getAuxSlot(cid, tree.auxMerkleSize, tree.merkleNonce),
+      `Slot mismatch for ${sym}`);
+  }
+});
+
 test('Single-chain proof has empty branch when merkleSize=2 with one zero slot', () => {
   // Force merkleSize=2 by registering exactly one chain
   const eng = makeEngineWithChains([
