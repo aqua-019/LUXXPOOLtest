@@ -25,6 +25,29 @@ const log = createLogger('auxpow');
 // Merged mining magic bytes (marks the aux merkle root in coinbase)
 const MERGED_MINING_HEADER = Buffer.from('fabe6d6d', 'hex');
 
+/**
+ * Decode hex into a Buffer, asserting the resulting length when given.
+ * Buffer.from(badHex, 'hex') silently truncates — a daemon-supplied hash
+ * that happens to contain a non-hex character would produce a partial
+ * buffer and a malformed AuxPoW proof. Throw early instead.
+ */
+function safeHexToBuffer(hex, label, expectedBytes) {
+  if (typeof hex !== 'string') {
+    throw new Error(`${label}: expected hex string, got ${typeof hex}`);
+  }
+  if (!/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error(`${label}: contains non-hex characters`);
+  }
+  if (hex.length % 2 !== 0) {
+    throw new Error(`${label}: odd-length hex`);
+  }
+  const buf = Buffer.from(hex, 'hex');
+  if (expectedBytes !== undefined && buf.length !== expectedBytes) {
+    throw new Error(`${label}: expected ${expectedBytes} bytes, got ${buf.length}`);
+  }
+  return buf;
+}
+
 class AuxPowEngine extends EventEmitter {
   /**
    * @param {object} auxConfigs - Map of symbol → { host, port, user, password, address }
@@ -191,10 +214,14 @@ class AuxPowEngine extends EventEmitter {
         for (const [symbol, auxBlock] of auxBlocks) {
           const slot = this._getAuxSlot(auxBlock.chainId, merkleSize, merkleNonce);
           if (candidate[slot] !== null) { collision = true; break; }
-          candidate[slot] = {
-            symbol,
-            hash: Buffer.from(auxBlock.hash, 'hex'),
-          };
+          let hashBuf;
+          try {
+            hashBuf = safeHexToBuffer(auxBlock.hash, `auxBlock(${symbol}).hash`, 32);
+          } catch (err) {
+            log.error({ coin: symbol, err: err.message }, 'Aux block hash invalid — skipping chain');
+            continue;
+          }
+          candidate[slot] = { symbol, hash: hashBuf };
         }
         if (!collision) { slots = candidate; break; }
       }
@@ -324,7 +351,7 @@ class AuxPowEngine extends EventEmitter {
 
       try {
         // Compare hash against aux chain target
-        const auxTarget = Buffer.from(auxBlock.target, 'hex');
+        const auxTarget = safeHexToBuffer(auxBlock.target, `auxBlock(${symbol}).target`, 32);
         const hashReversed = Buffer.from(headerHash).reverse();
 
         if (hashReversed.compare(auxTarget) <= 0) {
@@ -436,7 +463,7 @@ class AuxPowEngine extends EventEmitter {
     const parts = [];
 
     // Coinbase transaction (serialized)
-    parts.push(Buffer.from(coinbaseHex, 'hex'));
+    parts.push(safeHexToBuffer(coinbaseHex, 'coinbaseHex'));
 
     // Coinbase merkle branch
     const branchCount = coinbaseMerkleBranch ? coinbaseMerkleBranch.length : 0;
@@ -474,7 +501,9 @@ class AuxPowEngine extends EventEmitter {
     parts.push(auxSideMask);
 
     // Parent block header (80 bytes)
-    parts.push(Buffer.isBuffer(parentHeader) ? parentHeader : Buffer.from(parentHeader, 'hex'));
+    parts.push(Buffer.isBuffer(parentHeader)
+      ? parentHeader
+      : safeHexToBuffer(parentHeader, 'parentHeader', 80));
 
     return Buffer.concat(parts).toString('hex');
   }
