@@ -235,6 +235,10 @@ class BlockTemplateManager extends EventEmitter {
     const blockReward = template.coinbasevalue;
     const poolFee = this.poolConfig.fee;
     const feeAddress = this.poolConfig.feeAddress;
+    const rewardAddress = this.poolConfig.rewardAddress;
+    if (!rewardAddress) {
+      throw new Error('LTC_REWARD_ADDRESS not configured — pool reward wallet is required');
+    }
 
     // ── Build coinbase transaction ──
     const parts = [];
@@ -298,11 +302,12 @@ class BlockTemplateManager extends EventEmitter {
     rewardBuf.writeBigInt64LE(BigInt(minerReward));
     parts2.push(rewardBuf);
 
-    // Output script (pay-to-pool-address) - placeholder
-    // In production, this is derived from the coinbaseaux or pool wallet
-    const outputScript = template.coinbasetxn && template.coinbasetxn.data
-      ? Buffer.from(template.coinbasetxn.data, 'hex')
-      : this._buildOutputScript(feeAddress || 'POOL_ADDRESS_PLACEHOLDER');
+    // Output script: block reward goes to the pool's dedicated reward
+    // wallet, separate from the fee wallet. Routing rewards through the fee
+    // address before redistribution gave a single key control over both
+    // streams; LTC_REWARD_ADDRESS is the operator's hot wallet that funds
+    // PPLNS payouts.
+    const outputScript = this._buildOutputScript(rewardAddress);
     parts2.push(serializeVarInt(outputScript.length));
     parts2.push(outputScript);
 
