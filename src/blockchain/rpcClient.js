@@ -152,17 +152,41 @@ class RpcClient {
     return this.call('getblocktemplate', [{ capabilities }]);
   }
 
-  /** Submit a solved block (retries on transient failure) */
+  /**
+   * Submit a solved block (retries on transient failure).
+   *
+   * Each attempt inherits the call()-level 30s socket timeout, but we also
+   * impose an absolute per-attempt 30s deadline here using AbortController.
+   * If the daemon hangs without sending data on an open socket, the inner
+   * timeout would still fire — but the AbortController ceiling is the
+   * stronger guarantee and emits a distinct BLOCK_RPC_TIMEOUT event so
+   * "block submission stuck" is visible in the dashboard.
+   */
   async submitBlock(blockHex) {
     const maxRetries = 3;
+    const SUBMIT_TIMEOUT_MS = 30_000;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), SUBMIT_TIMEOUT_MS);
       try {
-        return await this.call('submitblock', [blockHex]);
+        const racer = new Promise((_, reject) => {
+          ac.signal.addEventListener('abort', () => {
+            this.log.error({ attempt, ms: SUBMIT_TIMEOUT_MS }, 'BLOCK_RPC_TIMEOUT submitblock exceeded ceiling');
+            try {
+              poolLogger.emit('DAEMON_002', { chain: this._chainLabel(), rpc: 'submitblock', attempt });
+            } catch (_) { /* logger best-effort */ }
+            reject(new Error(`submitblock timed out after ${SUBMIT_TIMEOUT_MS}ms (attempt ${attempt})`));
+          }, { once: true });
+        });
+        const result = await Promise.race([this.call('submitblock', [blockHex]), racer]);
+        return result;
       } catch (err) {
         if (attempt === maxRetries) throw err;
         const delay = 100 * Math.pow(2, attempt - 1); // 100ms, 200ms, 400ms
         this.log.warn({ attempt, err: err.message }, `submitblock failed, retrying in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
+      } finally {
+        clearTimeout(timer);
       }
     }
   }
