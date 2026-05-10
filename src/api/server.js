@@ -44,6 +44,28 @@ function createApiServer(deps) {
   });
   app.use('/api/', limiter);
 
+  // Per-address Redis-backed limiter for /api/v1/miner/:address* —
+  // the global limiter is per-IP, so a single attacker can iterate
+  // through addresses to enumerate active miners and pound the DB.
+  // Limit: 30 requests per address per 60s window. Fails open if Redis
+  // is unavailable so legitimate users are never blocked by a Redis
+  // outage.
+  async function perAddressLimit(req, res, next) {
+    const addr = req.params.address;
+    if (!addr) return next();
+    try {
+      const key = `ratelimit:miner:${addr}`;
+      const count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, 60);
+      if (count > 30) {
+        return res.status(429).json({ error: 'Too many lookups for this address', code: 'RATE_LIMIT' });
+      }
+    } catch (err) {
+      log.warn({ err: err.message }, 'Address rate limiter unavailable — allowing through');
+    }
+    next();
+  }
+
   // ── Health ──
   app.get('/health', (req, res) => {
     res.json({ status: 'ok', pool: config.pool.name, uptime: process.uptime() });
@@ -107,8 +129,19 @@ function createApiServer(deps) {
   // MINER ENDPOINTS
   // ═══════════════════════════════════════════════════════
 
-  app.get('/api/v1/miner/:address', async (req, res) => {
+  app.get('/api/v1/miner/:address', perAddressLimit, async (req, res) => {
     const { address } = req.params;
+
+    // Cached not-found responses absorb enumeration probes without
+    // hitting Postgres on every guess.
+    try {
+      const cached = await redis.get(`miner-cache:notfound:${address}`);
+      if (cached) {
+        return res.status(API.errors.MINER_NOT_FOUND.status).json(API.errors.MINER_NOT_FOUND);
+      }
+    } catch (err) {
+      log.debug({ err: err.message }, 'miner-not-found cache lookup failed');
+    }
 
     try {
       // Miner info
@@ -118,6 +151,8 @@ function createApiServer(deps) {
       );
 
       if (minerResult.rows.length === 0) {
+        redis.setex(`miner-cache:notfound:${address}`, 60, '1')
+          .catch(err => log.debug({ err: err.message }, 'miner-not-found cache set failed'));
         return res.status(API.errors.MINER_NOT_FOUND.status).json(API.errors.MINER_NOT_FOUND);
       }
 
@@ -159,7 +194,7 @@ function createApiServer(deps) {
   });
 
   // Miner hashrate history
-  app.get('/api/v1/miner/:address/hashrate', async (req, res) => {
+  app.get('/api/v1/miner/:address/hashrate', perAddressLimit, async (req, res) => {
     const { address } = req.params;
     const hours = parseInt(req.query.hours || '24');
 
