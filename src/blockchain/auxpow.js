@@ -390,8 +390,15 @@ class AuxPowEngine extends EventEmitter {
           return;
         }
       } catch (err) {
-        log.warn({ coin: symbol, err: err.message }, 'AuxPoW lock acquire failed — proceeding without lock');
-        poolLogger.emit('AUX_004', { chain: symbol, error: err.message });
+        // Without the lock we cannot guarantee single-submission. Some aux
+        // chains penalize duplicate submitauxblock calls (banscore bumps
+        // that can briefly disconnect us from the daemon). Foregoing one
+        // aux submission is preferable to risking that — emit AUX_004 and
+        // bail out instead of silently proceeding lock-less.
+        log.error({ coin: symbol, err: err.message },
+                  'AuxPoW lock acquire failed — REJECTING submission (single-submit invariant)');
+        poolLogger.emit('AUX_004', { chain: symbol, error: err.message, action: 'reject' });
+        return;
       }
     }
 
