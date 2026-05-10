@@ -196,7 +196,10 @@ function createApiServer(deps) {
   // Miner hashrate history
   app.get('/api/v1/miner/:address/hashrate', perAddressLimit, async (req, res) => {
     const { address } = req.params;
-    const hours = parseInt(req.query.hours || '24');
+    // Clamp to 1..720 (30 days). Without this an attacker could request
+    // ?hours=999999999 and force NOW() - INTERVAL '... hour' to enumerate
+    // every row in pool_stats / miner_hashrate.
+    const hours = Math.min(Math.max(parseInt(req.query.hours || '24', 10) || 24, 1), 720);
 
     try {
       const result = await db.query(
@@ -304,7 +307,10 @@ function createApiServer(deps) {
   // ═══════════════════════════════════════════════════════
 
   app.get('/api/v1/pool/hashrate', async (req, res) => {
-    const hours = parseInt(req.query.hours || '24');
+    // Clamp to 1..720 (30 days). Without this an attacker could request
+    // ?hours=999999999 and force NOW() - INTERVAL '... hour' to enumerate
+    // every row in pool_stats / miner_hashrate.
+    const hours = Math.min(Math.max(parseInt(req.query.hours || '24', 10) || 24, 1), 720);
 
     try {
       const result = await db.query(
