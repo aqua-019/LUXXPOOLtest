@@ -220,6 +220,9 @@ function validateConfig() {
   if (config.api.adminToken && config.api.adminToken.length < 32) {
     errors.push('API_ADMIN_TOKEN must be at least 32 characters for security');
   }
+  if (!process.env.COOKIE_SECRET || process.env.COOKIE_SECRET.length < 32) {
+    errors.push('COOKIE_SECRET must be set and at least 32 characters (generate with: openssl rand -hex 32)');
+  }
 
   if (errors.length > 0) {
     console.error('Configuration errors:');

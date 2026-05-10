@@ -165,7 +165,7 @@ const secEngine = new SecurityEngine(
   {
     transport: { requireTls: false },
     protocol: { maxMessageBytes: 2048, maxWorkerLength: 96, maxPasswordLength: 64 },
-    auth: {},
+    auth: { secret: 'test-cookie-secret-with-at-least-32-chars-of-entropy' },
     fingerprint: { minShares: 500, bwhThreshold: 0.01, staleLimit: 0.20 },
     behavior: { maxSharesPerSec: 10, maxNtimeDeviation: 300, maxAddressesPerIp: 3, maxHashrateOscillation: 5 },
     rateLimit: { maxConnPerIp: 5, maxConnPerFleetIp: 100, maxShareRatePerMin: 600, maxConnRatePerMin: 30 },
@@ -458,6 +458,37 @@ test('Single-chain proof has empty branch when merkleSize=2 with one zero slot',
     ? sha256d(Buffer.concat([info.branch[0], h]))
     : sha256d(Buffer.concat([h, info.branch[0]]));
   assert(h.equals(tree.auxMerkleRoot), 'Single-chain proof did not match root');
+});
+
+// ═══════════════════════════════════════════════════════
+// C6b: COOKIE_SECRET REQUIRED (H-9)
+// ═══════════════════════════════════════════════════════
+
+console.log('\nC6b: Cookie Secret Enforcement\n');
+
+const { AuthLayer } = require('../src/pool/securityEngine');
+
+test('AuthLayer throws without a secret', () => {
+  let threw = false;
+  try { new AuthLayer({}); } catch (err) { threw = /COOKIE_SECRET/.test(err.message); }
+  assert(threw, 'Expected AuthLayer to throw on missing secret');
+});
+
+test('AuthLayer throws with too-short secret (<32 chars)', () => {
+  let threw = false;
+  try { new AuthLayer({ secret: 'short' }); } catch (err) { threw = /COOKIE_SECRET/.test(err.message); }
+  assert(threw, 'Expected AuthLayer to throw on short secret');
+});
+
+test('Two AuthLayers with same secret produce identical cookies for same client', () => {
+  const sec = 'a'.repeat(64); // 64 hex chars
+  const a1 = new AuthLayer({ secret: sec });
+  const a2 = new AuthLayer({ secret: sec });
+  // Force matching serverEpoch so cookie HMAC inputs are identical
+  a2.serverEpoch = a1.serverEpoch;
+  const c1 = a1.issueCookie('client-x');
+  const c2 = a2.issueCookie('client-x');
+  assert(c1 === c2, `Cookies must match across nodes with same secret+epoch (got ${c1} vs ${c2})`);
 });
 
 // ═══════════════════════════════════════════════════════

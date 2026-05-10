@@ -261,7 +261,15 @@ class ProtocolLayer {
 // ═══════════════════════════════════════════════════════════
 class AuthLayer {
   constructor(config = {}) {
-    this.secret      = config.secret ?? crypto.randomBytes(32).toString('hex');
+    if (!config.secret || typeof config.secret !== 'string' || config.secret.length < 32) {
+      // A per-process random secret breaks horizontal scaling (each node
+      // would issue cookies that the other can't verify) and breaks cookie
+      // continuity across restarts. validateConfig() already enforces this,
+      // but guard here too so unit tests / direct instantiation can't
+      // silently fall back.
+      throw new Error('AuthLayer requires a stable secret of >=32 chars (set COOKIE_SECRET)');
+    }
+    this.secret      = config.secret;
     this.serverEpoch = Math.floor(Date.now() / 1000); // fixed at startup
     this.cookies     = new Map(); // clientId → { cookie, issuedAt, verified }
   }
