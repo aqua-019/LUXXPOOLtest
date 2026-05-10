@@ -21,22 +21,11 @@
  *   - Connection fingerprint data
  */
 
-const config = require('../../../config');
 const { createLogger } = require('../../utils/logger');
 const { API } = require('../../ux/copy');
+const { requireAdminAuth: requireAdmin } = require('../middleware/adminAuth');
 
 const log = createLogger('dashboard-api');
-
-/**
- * Admin auth middleware
- */
-function requireAdmin(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!config.api.adminToken || token !== config.api.adminToken) {
-    return res.status(401).json({ error: 'Admin authentication required' });
-  }
-  next();
-}
 
 function registerDashboardRoutes(app, deps) {
   const { db, stratumServer, hashrateEstimator, rpcClient,

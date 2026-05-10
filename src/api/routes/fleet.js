@@ -5,19 +5,8 @@
 
 const { API } = require('../../ux/copy');
 const { createLogger } = require('../../utils/logger');
-const config = require('../../../config');
+const { requireAdminAuth } = require('../middleware/adminAuth');
 const log = createLogger('api:fleet');
-
-function requireAdminAuth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!config.api.adminToken) {
-    return res.status(503).json({ error: 'Admin token not configured' });
-  }
-  if (token !== config.api.adminToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
-}
 
 function registerFleetRoutes(app, deps) {
   const { fleetManager } = deps;
