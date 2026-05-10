@@ -119,7 +119,7 @@ LUXXPOOL is built fleet-first. The operator's own hardware gets priority treatme
   │   Anyone with an L9/L7/DG2 ──> POOL (2% fee)      │
   │   Solo miners ──────────────── SOLO (1% fee)       │
   │                                                    │
-  │   Full 9-layer security pipeline active            │
+  │   8-layer security pipeline active (L3 deferred)   │
   │   VarDiff, rate limiting, reputation scoring       │
   │                                                    │
   └────────────────────────────────────────────────────┘
@@ -143,9 +143,9 @@ Currently tested and proven for **40 L9 miners** (680 GH/s) with headroom to 100
 
 ---
 
-## Nine-Layer Security Engine
+## Layered Security Engine
 
-Every public miner connection passes through 9 sequential security layers. Fleet miners bypass the pipeline entirely.
+Every public miner connection passes through eight active security layers (Layer 3 cookie verification is deferred to Stratum V2 — Stratum V1 has no protocol field for miners to echo a cookie back, so cookies are issued at subscribe but verification is a no-op until V2 lands). Fleet miners bypass the pipeline entirely.
 
 ```
   Incoming Connection
@@ -154,7 +154,7 @@ Every public miner connection passes through 9 sequential security layers. Fleet
         │
    L2   │  Protocol Hardening ──── JSON validation, buffer limits, message caps
         │
-   L3   │  Auth & Cookies ──────── HMAC mining cookies, anti-hijack
+   L3   │  Auth & Cookies ──────── HMAC mining cookies (verification deferred to Stratum V2)
         │
    L4   │  Share Fingerprinting ── Statistical BWH/FAW attack detection
         │

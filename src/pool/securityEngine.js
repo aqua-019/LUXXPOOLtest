@@ -261,7 +261,15 @@ class ProtocolLayer {
 // ═══════════════════════════════════════════════════════════
 class AuthLayer {
   constructor(config = {}) {
-    this.secret      = config.secret ?? crypto.randomBytes(32).toString('hex');
+    if (!config.secret || typeof config.secret !== 'string' || config.secret.length < 32) {
+      // A per-process random secret breaks horizontal scaling (each node
+      // would issue cookies that the other can't verify) and breaks cookie
+      // continuity across restarts. validateConfig() already enforces this,
+      // but guard here too so unit tests / direct instantiation can't
+      // silently fall back.
+      throw new Error('AuthLayer requires a stable secret of >=32 chars (set COOKIE_SECRET)');
+    }
+    this.secret      = config.secret;
     this.serverEpoch = Math.floor(Date.now() / 1000); // fixed at startup
     this.cookies     = new Map(); // clientId → { cookie, issuedAt, verified }
   }
@@ -1129,11 +1137,12 @@ class SecurityEngine extends EventEmitter {
     const l6s = this.layers.rateLimit.checkShareRate(clientId);
     if (l6s) return this._handle(l6s, { clientId, ip, address });
 
-    // L3 — cookie verification
-    if (share.submittedCookie) {
-      const l3 = this.layers.auth.verifyCookie(clientId, share.submittedCookie);
-      if (l3.result !== RESULT.PASS) return this._handle(l3, { clientId, ip, address });
-    }
+    // L3 — cookie verification deferred until Stratum V2.
+    // Stratum V1 has no protocol field for miners to echo a server-issued
+    // cookie back to the pool; reserving extranonce2 bytes for one would
+    // cost L9 nonce search range. The cookie is still issued at subscribe
+    // (so the wiring is ready when V2 lands), but verification is a no-op
+    // here. See SECURITY.md.
 
     // L7 — payout integrity
     if (address) {
@@ -1282,8 +1291,8 @@ class SecurityEngine extends EventEmitter {
           detail: `TLS enforcement ${this.layers.transport.requireTls ? 'ON' : 'off'}, min ${this.layers.transport.minTlsVersion}` },
         { id: 2, name: 'Protocol Hardening',           active: true,
           detail: `Max frame ${this.layers.protocol.maxMessageBytes}B, ${this.layers.protocol.violations.size} tracked violators` },
-        { id: 3, name: 'Authentication & Cookies',     active: true,
-          detail: `${this.layers.auth.cookies.size} active cookies issued` },
+        { id: 3, name: 'Authentication & Cookies',     active: false, status: 'deferred',
+          detail: `${this.layers.auth.cookies.size} cookies issued; verification deferred to Stratum V2` },
         { id: 4, name: 'Share Fingerprinting',         active: true,
           detail: `Tracking ${this.layers.fingerprint.profiles.size} miner profiles` },
         { id: 5, name: 'Behavioral Anomaly Detection', active: true,

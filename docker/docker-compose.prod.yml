@@ -49,6 +49,8 @@ services:
       - luxxpool-net
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     read_only: true
     tmpfs:
       - /tmp:size=100M
@@ -85,6 +87,10 @@ services:
         max-file: "3"
     networks:
       - luxxpool-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     shm_size: 256m
 
   redis:
@@ -124,6 +130,10 @@ services:
         max-file: "3"
     networks:
       - luxxpool-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   # ── Litecoin Core ─────────────────────────────────────
   # Only use this if you don't already have a local daemon
@@ -136,7 +146,7 @@ services:
       -txindex=1
       -rpcuser=luxxpool_rpc
       -rpcpassword=${LTC_PASS}
-      -rpcallowip=0.0.0.0/0
+      -rpcallowip=172.28.0.0/16
       -rpcbind=0.0.0.0
       -rpcport=9332
       -zmqpubhashblock=tcp://0.0.0.0:28332
@@ -167,6 +177,10 @@ services:
         max-file: "3"
     networks:
       - luxxpool-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   pg-data:

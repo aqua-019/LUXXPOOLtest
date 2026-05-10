@@ -354,7 +354,7 @@ const AuditLog = require('../src/pool/auditLog');
 
 // C1: Miner Registry — Model Detection
 console.log('C1: Miner Model Detection');
-const registry = new MinerRegistry();
+const registry = MinerRegistry;
 
 const l9 = registry.identify('bitmain-antminer-l9/1.0.3');
 assert(l9 !== null, 'Detects Antminer L9');

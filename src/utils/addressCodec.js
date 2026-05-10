@@ -212,8 +212,13 @@ function addressToOutputScript(address) {
     ]);
   }
 
-  if (decoded.version === 0x32 || decoded.version === 0x05) {
-    // P2SH: OP_HASH160 <20-byte-hash> OP_EQUAL
+  if (decoded.version === 0x32) {
+    // Litecoin P2SH: OP_HASH160 <20-byte-hash> OP_EQUAL.
+    // The previous code also accepted 0x05, which is Bitcoin's P2SH
+    // version byte — accepting it would let a miner register a Bitcoin
+    // address and have payouts encoded into LTC scriptPubKeys that
+    // route to a Bitcoin-network address on the Litecoin chain (lost
+    // funds). Reject by omission.
     return Buffer.concat([
       Buffer.from([0xa9, 0x14]),
       decoded.hash.slice(0, 20),

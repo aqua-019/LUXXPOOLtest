@@ -5,18 +5,19 @@
 
 const { API } = require('../../ux/copy');
 const { createLogger } = require('../../utils/logger');
-const config = require('../../../config');
+const { requireAdminAuth } = require('../middleware/adminAuth');
+const { validateAddress } = require('../../utils/addressCodec');
+const poolLogger = require('../../logging/poolLogger');
 const log = createLogger('api:fleet');
 
-function requireAdminAuth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!config.api.adminToken) {
-    return res.status(503).json({ error: 'Admin token not configured' });
-  }
-  if (token !== config.api.adminToken) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
+// Octet-bounded IPv4 regex — the previous regex accepted invalid octets like
+// 999.999.999.999/33 because it only checked digit counts, not values.
+function isValidIpOrCidr(s) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/.exec(s);
+  if (!m) return false;
+  for (let i = 1; i <= 4; i++) if (parseInt(m[i], 10) > 255) return false;
+  if (m[6] !== undefined && parseInt(m[6], 10) > 32) return false;
+  return true;
 }
 
 function registerFleetRoutes(app, deps) {
@@ -63,12 +64,15 @@ function registerFleetRoutes(app, deps) {
   app.post('/api/v1/fleet/ip', requireAdminAuth, (req, res) => {
     const { ip } = req.body;
     if (!ip) return res.status(400).json({ error: API.validation.IP_REQUIRED, code: 'VALIDATION_ERROR' });
-    if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(ip)) {
+    if (!isValidIpOrCidr(ip)) {
       return res.status(400).json({ error: 'Invalid IP or CIDR format', code: 'VALIDATION_ERROR' });
     }
 
     const success = fleetManager.addIp(ip);
-    log.info({ ip }, 'Fleet IP added via API');
+    log.warn({ ip, sourceIp: req.ip }, 'FLEET MUTATION: IP added via API');
+    try { poolLogger.emit('FLEET_001', { action: 'add_ip', ip, sourceIp: req.ip }); } catch (err) {
+      log.debug({ err: err.message }, 'poolLogger emit FLEET_001 failed');
+    }
     res.json({ success, config: fleetManager.getConfig() });
   });
 
@@ -77,8 +81,15 @@ function registerFleetRoutes(app, deps) {
   app.delete('/api/v1/fleet/ip', requireAdminAuth, (req, res) => {
     const { ip } = req.body;
     if (!ip) return res.status(400).json({ error: API.validation.IP_REQUIRED, code: 'VALIDATION_ERROR' });
+    if (!isValidIpOrCidr(ip)) {
+      return res.status(400).json({ error: 'Invalid IP or CIDR format', code: 'VALIDATION_ERROR' });
+    }
 
     const success = fleetManager.removeIp(ip);
+    log.warn({ ip, sourceIp: req.ip }, 'FLEET MUTATION: IP removed via API');
+    try { poolLogger.emit('FLEET_001', { action: 'remove_ip', ip, sourceIp: req.ip }); } catch (err) {
+      log.debug({ err: err.message }, 'poolLogger emit FLEET_001 failed');
+    }
     res.json({ success, config: fleetManager.getConfig() });
   });
 
@@ -88,8 +99,17 @@ function registerFleetRoutes(app, deps) {
     const { address } = req.body;
     if (!address) return res.status(400).json({ error: API.validation.ADDRESS_REQUIRED, code: 'VALIDATION_ERROR' });
 
+    // Admin token compromise + unvalidated address = direct fee theft.
+    const v = validateAddress(address);
+    if (!v.valid) {
+      return res.status(400).json({ error: `Invalid address: ${v.error}`, code: 'VALIDATION_ERROR' });
+    }
+
     const success = fleetManager.addAddress(address);
-    log.info({ address }, 'Fleet address added via API');
+    log.warn({ address, type: v.type, sourceIp: req.ip }, 'FLEET MUTATION: address added via API');
+    try { poolLogger.emit('FLEET_001', { action: 'add_address', address, sourceIp: req.ip }); } catch (err) {
+      log.debug({ err: err.message }, 'poolLogger emit FLEET_001 failed');
+    }
     res.json({ success, config: fleetManager.getConfig() });
   });
 
@@ -99,7 +119,16 @@ function registerFleetRoutes(app, deps) {
     const { address } = req.body;
     if (!address) return res.status(400).json({ error: API.validation.ADDRESS_REQUIRED, code: 'VALIDATION_ERROR' });
 
+    const v = validateAddress(address);
+    if (!v.valid) {
+      return res.status(400).json({ error: `Invalid address: ${v.error}`, code: 'VALIDATION_ERROR' });
+    }
+
     const success = fleetManager.removeAddress(address);
+    log.warn({ address, sourceIp: req.ip }, 'FLEET MUTATION: address removed via API');
+    try { poolLogger.emit('FLEET_001', { action: 'remove_address', address, sourceIp: req.ip }); } catch (err) {
+      log.debug({ err: err.message }, 'poolLogger emit FLEET_001 failed');
+    }
     res.json({ success, config: fleetManager.getConfig() });
   });
 
@@ -107,10 +136,17 @@ function registerFleetRoutes(app, deps) {
   // PUT /api/v1/fleet/capacity { "max": 200 }
   app.put('/api/v1/fleet/capacity', requireAdminAuth, (req, res) => {
     const { max } = req.body;
-    if (!max || max < 1) return res.status(400).json({ error: API.validation.MAX_INVALID, code: 'VALIDATION_ERROR' });
+    // Hard upper bound to prevent accidental fleet-bloat from a typo or a
+    // compromised admin token.
+    if (!Number.isInteger(max) || max < 1 || max > 10000) {
+      return res.status(400).json({ error: 'max must be an integer in 1..10000', code: 'VALIDATION_ERROR' });
+    }
 
     fleetManager.setMaxMiners(max);
-    log.info({ max }, 'Fleet capacity updated via API');
+    log.warn({ max, sourceIp: req.ip }, 'FLEET MUTATION: capacity changed via API');
+    try { poolLogger.emit('FLEET_002', { action: 'set_capacity', max, sourceIp: req.ip }); } catch (err) {
+      log.debug({ err: err.message }, 'poolLogger emit FLEET_002 failed');
+    }
     res.json({ maxMiners: max, config: fleetManager.getConfig() });
   });
 }

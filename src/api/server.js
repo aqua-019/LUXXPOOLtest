@@ -16,6 +16,7 @@ const { registerSecurityRoutes } = require('./routes/security');
 const { registerPoolRoutes } = require('./routes/pool');
 const { registerFleetRoutes } = require('./routes/fleet');
 const { registerDashboardRoutes } = require('./routes/dashboard');
+const { isAdminRequest } = require('./middleware/adminAuth');
 const { API } = require('../ux/copy');
 const config = require('../../config');
 
@@ -42,6 +43,28 @@ function createApiServer(deps) {
     legacyHeaders: false,
   });
   app.use('/api/', limiter);
+
+  // Per-address Redis-backed limiter for /api/v1/miner/:address* —
+  // the global limiter is per-IP, so a single attacker can iterate
+  // through addresses to enumerate active miners and pound the DB.
+  // Limit: 30 requests per address per 60s window. Fails open if Redis
+  // is unavailable so legitimate users are never blocked by a Redis
+  // outage.
+  async function perAddressLimit(req, res, next) {
+    const addr = req.params.address;
+    if (!addr) return next();
+    try {
+      const key = `ratelimit:miner:${addr}`;
+      const count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, 60);
+      if (count > 30) {
+        return res.status(429).json({ error: 'Too many lookups for this address', code: 'RATE_LIMIT' });
+      }
+    } catch (err) {
+      log.warn({ err: err.message }, 'Address rate limiter unavailable — allowing through');
+    }
+    next();
+  }
 
   // ── Health ──
   app.get('/health', (req, res) => {
@@ -106,8 +129,19 @@ function createApiServer(deps) {
   // MINER ENDPOINTS
   // ═══════════════════════════════════════════════════════
 
-  app.get('/api/v1/miner/:address', async (req, res) => {
+  app.get('/api/v1/miner/:address', perAddressLimit, async (req, res) => {
     const { address } = req.params;
+
+    // Cached not-found responses absorb enumeration probes without
+    // hitting Postgres on every guess.
+    try {
+      const cached = await redis.get(`miner-cache:notfound:${address}`);
+      if (cached) {
+        return res.status(API.errors.MINER_NOT_FOUND.status).json(API.errors.MINER_NOT_FOUND);
+      }
+    } catch (err) {
+      log.debug({ err: err.message }, 'miner-not-found cache lookup failed');
+    }
 
     try {
       // Miner info
@@ -117,6 +151,8 @@ function createApiServer(deps) {
       );
 
       if (minerResult.rows.length === 0) {
+        redis.setex(`miner-cache:notfound:${address}`, 60, '1')
+          .catch(err => log.debug({ err: err.message }, 'miner-not-found cache set failed'));
         return res.status(API.errors.MINER_NOT_FOUND.status).json(API.errors.MINER_NOT_FOUND);
       }
 
@@ -158,9 +194,12 @@ function createApiServer(deps) {
   });
 
   // Miner hashrate history
-  app.get('/api/v1/miner/:address/hashrate', async (req, res) => {
+  app.get('/api/v1/miner/:address/hashrate', perAddressLimit, async (req, res) => {
     const { address } = req.params;
-    const hours = parseInt(req.query.hours || '24');
+    // Clamp to 1..720 (30 days). Without this an attacker could request
+    // ?hours=999999999 and force NOW() - INTERVAL '... hour' to enumerate
+    // every row in pool_stats / miner_hashrate.
+    const hours = Math.min(Math.max(parseInt(req.query.hours || '24', 10) || 24, 1), 720);
 
     try {
       const result = await db.query(
@@ -235,9 +274,26 @@ function createApiServer(deps) {
       return res.json({ miners: [] });
     }
 
+    const isAdmin = isAdminRequest(req);
+
     const miners = stratumServer.getClients()
       .filter(c => c.authorized)
-      .map(c => c.toJSON());
+      .map(c => {
+        const j = c.toJSON();
+        if (isAdmin) return j;
+        // Public response: strip identifying fields. The public endpoint
+        // is unauthenticated, so anyone could otherwise enumerate fleet
+        // and miner IPs.
+        delete j.ip;
+        delete j.id;
+        if (typeof j.worker === 'string' && j.worker.length > 12) {
+          j.worker = j.worker.slice(0, 10) + '...';
+        }
+        if (typeof j.address === 'string' && j.address.length > 14) {
+          j.address = j.address.slice(0, 6) + '...' + j.address.slice(-4);
+        }
+        return j;
+      });
 
     res.json({
       count: miners.length,
@@ -251,7 +307,10 @@ function createApiServer(deps) {
   // ═══════════════════════════════════════════════════════
 
   app.get('/api/v1/pool/hashrate', async (req, res) => {
-    const hours = parseInt(req.query.hours || '24');
+    // Clamp to 1..720 (30 days). Without this an attacker could request
+    // ?hours=999999999 and force NOW() - INTERVAL '... hour' to enumerate
+    // every row in pool_stats / miner_hashrate.
+    const hours = Math.min(Math.max(parseInt(req.query.hours || '24', 10) || 24, 1), 720);
 
     try {
       const result = await db.query(

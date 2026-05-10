@@ -547,12 +547,197 @@ test('VarDiff adjusts up for fast shares', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// D14: PPLNS QUERY MUST FILTER BY status='valid' (C-1)
+// D15: PAYMENT RECONCILIATION ON STARTUP (C-5)
+// ═══════════════════════════════════════════════════════
+
+// Helper to build a pending-payments fixture DB
+function makePendingDb(rows, captureUpdates) {
+  return {
+    query: async (sql, params) => {
+      if (/SELECT\s+block_height/i.test(sql) && /pending/i.test(sql)) {
+        // Group by block_height
+        const groups = new Map();
+        for (const r of rows) {
+          if (r.status !== 'pending' || r.coin !== 'LTC') continue;
+          if (!groups.has(r.block_height)) {
+            groups.set(r.block_height, { block_height: r.block_height, ids: [], addrs: [], amounts: [] });
+          }
+          const g = groups.get(r.block_height);
+          g.ids.push(r.id);
+          g.addrs.push(r.address);
+          g.amounts.push(String(r.amount));
+        }
+        return { rows: Array.from(groups.values()) };
+      }
+      if (/UPDATE\s+payments\s+SET\s+status='sent'/i.test(sql)) {
+        captureUpdates.push({ kind: 'sent', txid: params[0], ids: params[1] });
+        for (const r of rows) {
+          if (params[1].includes(r.id)) { r.status = 'sent'; r.txid = params[0]; }
+        }
+        return { rowCount: params[1].length };
+      }
+      if (/UPDATE\s+payments\s+SET\s+status='failed'/i.test(sql)) {
+        captureUpdates.push({ kind: 'failed', ids: params ? params[0] : null });
+        for (const r of rows) {
+          if (!params || params[0].includes(r.id)) {
+            if (r.status === 'pending' && r.coin === 'LTC') r.status = 'failed';
+          }
+        }
+        return { rowCount: rows.length };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+}
+
+const pplnsAsyncTests = [];
+pplnsAsyncTests.push(async () => {
+  const queries = [];
+  const spyDb = {
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      // Return synthetic rows that would only contain valid shares
+      return { rows: [{ address: 'Lvalid01aaaaaaaaaaaaaaaaaaaaaaaaaa', total_diff: '300' }] };
+    },
+  };
+  const spyRedis = {
+    get: async () => null, set: async () => 'OK', del: async () => 1,
+    incrbyfloat: async () => '0',
+    pipeline: () => ({ hincrby: () => {}, incr: () => {}, set: () => {}, exec: async () => [] }),
+  };
+  const spyPP = new PaymentProcessor(mockRpc, spyDb, spyRedis, {
+    pplnsWindow: 100, poolFee: 0.02, minPayout: 0.001, fleetAddresses: new Set(),
+  }, null);
+
+  await spyPP._calculatePPLNS({ height: 50000 });
+
+  const pplnsQ = queries.find(q => /SUM\s*\(\s*difficulty\s*\)/i.test(q.sql));
+  if (!pplnsQ) {
+    console.log('  ❌ PPLNS SQL not captured by spy');
+    failed++;
+    return;
+  }
+  if (!/AND\s+status\s*=\s*'valid'/i.test(pplnsQ.sql)) {
+    console.log(`  ❌ PPLNS query missing status='valid' filter: ${pplnsQ.sql}`);
+    failed++;
+    return;
+  }
+  console.log('  ✅ PPLNS query filters by status=\'valid\' (C-1)');
+  passed++;
+});
+
+const reconcileAsyncTests = [];
+
+// Positive: matching wallet tx → pending → sent
+reconcileAsyncTests.push(async () => {
+  const rows = [
+    { id: 1, address: 'LrecA00000000000000000000000000000', amount: 1.25, block_height: 60001, status: 'pending', coin: 'LTC' },
+    { id: 2, address: 'LrecB00000000000000000000000000000', amount: 0.50, block_height: 60001, status: 'pending', coin: 'LTC' },
+  ];
+  const updates = [];
+  const db = makePendingDb(rows, updates);
+  const rpc = {
+    listRecentTransactions: async () => ([
+      // Wallet returns sends with negative amount
+      { category: 'send', address: 'LrecA00000000000000000000000000000', amount: -1.25, txid: 'tx_recon_001' },
+      { category: 'send', address: 'LrecB00000000000000000000000000000', amount: -0.50, txid: 'tx_recon_001' },
+    ]),
+  };
+  const pp = new PaymentProcessor(rpc, db, mockRedis, {
+    pplnsWindow: 100, poolFee: 0.02, minPayout: 0.001, fleetAddresses: new Set(),
+  }, null);
+  await pp._reconcilePending();
+  const sentUpd = updates.find(u => u.kind === 'sent');
+  if (!sentUpd || sentUpd.txid !== 'tx_recon_001') {
+    console.log(`  ❌ C-5 positive: expected sent UPDATE with tx_recon_001, got ${JSON.stringify(updates)}`);
+    failed++;
+    return;
+  }
+  if (rows.some(r => r.status !== 'sent')) {
+    console.log(`  ❌ C-5 positive: rows not updated to sent: ${JSON.stringify(rows)}`);
+    failed++;
+    return;
+  }
+  console.log('  ✅ Pending → sent when wallet TX matches recipient set (C-5)');
+  passed++;
+});
+
+// Negative: no matching wallet tx → pending → failed
+reconcileAsyncTests.push(async () => {
+  const rows = [
+    { id: 10, address: 'LrecC00000000000000000000000000000', amount: 0.10, block_height: 60002, status: 'pending', coin: 'LTC' },
+  ];
+  const updates = [];
+  const db = makePendingDb(rows, updates);
+  const rpc = { listRecentTransactions: async () => ([]) };
+  const pp = new PaymentProcessor(rpc, db, mockRedis, {
+    pplnsWindow: 100, poolFee: 0.02, minPayout: 0.001, fleetAddresses: new Set(),
+  }, null);
+  await pp._reconcilePending();
+  const failedUpd = updates.find(u => u.kind === 'failed');
+  if (!failedUpd) {
+    console.log(`  ❌ C-5 negative: expected failed UPDATE, got ${JSON.stringify(updates)}`);
+    failed++;
+    return;
+  }
+  if (rows[0].status !== 'failed') {
+    console.log(`  ❌ C-5 negative: row not marked failed: ${JSON.stringify(rows)}`);
+    failed++;
+    return;
+  }
+  console.log('  ✅ Pending → failed when no wallet TX matches (C-5)');
+  passed++;
+});
+
+// RPC failure: wallet listtransactions throws → bulk pending → failed
+reconcileAsyncTests.push(async () => {
+  const rows = [
+    { id: 20, address: 'LrecD00000000000000000000000000000', amount: 0.20, block_height: 60003, status: 'pending', coin: 'LTC' },
+  ];
+  const updates = [];
+  const db = makePendingDb(rows, updates);
+  const rpc = { listRecentTransactions: async () => { throw new Error('rpc-down'); } };
+  const pp = new PaymentProcessor(rpc, db, mockRedis, {
+    pplnsWindow: 100, poolFee: 0.02, minPayout: 0.001, fleetAddresses: new Set(),
+  }, null);
+  await pp._reconcilePending();
+  if (rows[0].status !== 'failed') {
+    console.log(`  ❌ C-5 rpc-fail: row not marked failed on RPC error: ${JSON.stringify(rows)}`);
+    failed++;
+    return;
+  }
+  console.log('  ✅ RPC failure during reconcile downgrades pending → failed (C-5)');
+  passed++;
+});
+
+// ═══════════════════════════════════════════════════════
 // RUN ASYNC TESTS + SUMMARY
 // ═══════════════════════════════════════════════════════
 
 (async () => {
   console.log('\nD9: Payment Retry (async)\n');
   for (const fn of asyncTests) {
+    try {
+      await fn();
+    } catch (err) {
+      console.log(`  ❌ Async test failed: ${err.message}`);
+      failed++;
+    }
+  }
+
+  console.log('\nD14: PPLNS Status Filter (async)\n');
+  for (const fn of pplnsAsyncTests) {
+    try {
+      await fn();
+    } catch (err) {
+      console.log(`  ❌ Async test failed: ${err.message}`);
+      failed++;
+    }
+  }
+
+  console.log('\nD15: Payment Reconciliation (async)\n');
+  for (const fn of reconcileAsyncTests) {
     try {
       await fn();
     } catch (err) {

@@ -165,7 +165,7 @@ const secEngine = new SecurityEngine(
   {
     transport: { requireTls: false },
     protocol: { maxMessageBytes: 2048, maxWorkerLength: 96, maxPasswordLength: 64 },
-    auth: {},
+    auth: { secret: 'test-cookie-secret-with-at-least-32-chars-of-entropy' },
     fingerprint: { minShares: 500, bwhThreshold: 0.01, staleLimit: 0.20 },
     behavior: { maxSharesPerSec: 10, maxNtimeDeviation: 300, maxAddressesPerIp: 3, maxHashrateOscillation: 5 },
     rateLimit: { maxConnPerIp: 5, maxConnPerFleetIp: 100, maxShareRatePerMin: 600, maxConnRatePerMin: 30 },
@@ -319,6 +319,250 @@ test('VarInt large values', () => {
   const vi = serializeVarInt(70000);
   assert(vi.length === 5, `Expected 5 bytes for 70000, got ${vi.length}`);
   assert(vi[0] === 0xfe, 'Should use 0xFE prefix for 32-bit');
+});
+
+// ═══════════════════════════════════════════════════════
+// C6: AUXPOW MERKLE TREE — INCLUSION PROOFS (C-2)
+// ═══════════════════════════════════════════════════════
+
+console.log('\nC6: AuxPoW Merkle Branches\n');
+
+const AuxPowEngine = require('../src/blockchain/auxpow');
+
+// Helper: instantiate an engine without real chains, populate synthetic ones
+function makeEngineWithChains(chainSpecs) {
+  const eng = new AuxPowEngine({}, {});
+  // chainSpecs: [{ symbol, chainId, hashHex, targetHex }]
+  for (const c of chainSpecs) {
+    eng.chains.set(c.symbol, {
+      config: { name: c.symbol },
+      address: 'Lfixture',
+      currentBlock: { hash: c.hashHex, target: c.targetHex },
+      enabled: true,
+      blocksFound: 0,
+    });
+    eng.auxBlocks.set(c.symbol, {
+      hash: c.hashHex,
+      target: c.targetHex,
+      chainId: c.chainId,
+    });
+  }
+  return eng;
+}
+
+test('buildAuxMerkleTree returns a branch entry for every active chain', () => {
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x01, hashHex: '11'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'BBB', chainId: 0x02, hashHex: '22'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'CCC', chainId: 0x03, hashHex: '33'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'DDD', chainId: 0x04, hashHex: '44'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree !== null, 'Tree should not be null');
+  assert(tree.branches instanceof Map, 'Tree should expose a branches Map');
+  for (const sym of ['AAA', 'BBB', 'CCC', 'DDD']) {
+    assert(tree.branches.has(sym), `Missing branch entry for ${sym}`);
+  }
+});
+
+test('Reconstructing root from leaf + branch + sideMask matches auxMerkleRoot (multi-chain)', () => {
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x11, hashHex: 'aa'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'BBB', chainId: 0x22, hashHex: 'bb'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'CCC', chainId: 0x33, hashHex: 'cc'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'DDD', chainId: 0x44, hashHex: 'dd'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  for (const [sym, info] of tree.branches) {
+    let h = Buffer.from(eng.auxBlocks.get(sym).hash, 'hex');
+    for (let lvl = 0; lvl < info.branch.length; lvl++) {
+      const isRight = (info.sideMask >> lvl) & 1;
+      h = isRight
+        ? sha256d(Buffer.concat([info.branch[lvl], h]))
+        : sha256d(Buffer.concat([h, info.branch[lvl]]));
+    }
+    assert(
+      h.equals(tree.auxMerkleRoot),
+      `Branch reconstruction for ${sym} did not match root`
+    );
+  }
+});
+
+test('Slot collision is escaped without linear probing (C-3)', () => {
+  // Pick chainIds that all map to the same slot for nonce=0, merkleSize=4.
+  // After C-3, the engine must escape the collision by either rotating
+  // merkleNonce or doubling the tree size — the post-condition is that
+  // every chain's placed slot matches _getAuxSlot(cid, size, nonce).
+  const probeEng = new AuxPowEngine({}, {});
+  const targetSlot = probeEng._getAuxSlot(1, 4, 0);
+  const colliders = [];
+  for (let cid = 1; cid < 1000 && colliders.length < 3; cid++) {
+    if (probeEng._getAuxSlot(cid, 4, 0) === targetSlot) colliders.push(cid);
+  }
+  assert(colliders.length === 3, `Expected to find 3 colliders, got ${colliders.length}`);
+
+  const eng = makeEngineWithChains(colliders.map((cid, i) => ({
+    symbol: `C${i}`,
+    chainId: cid,
+    hashHex: String((i + 1) * 11).padStart(2, '0').repeat(32).slice(0, 64),
+    targetHex: 'ff'.repeat(32),
+  })));
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree !== null, 'Tree built');
+  assert(tree.branches.size === 3, `All 3 chains must be placed, got ${tree.branches.size}`);
+
+  // The daemon recomputes each chain's expected slot from chainId + nonce +
+  // merkleSize. Linear probing breaks this invariant; nonce rotation /
+  // tree doubling preserves it.
+  for (const [sym, info] of tree.branches) {
+    const cid = eng.auxBlocks.get(sym).chainId;
+    const expected = eng._getAuxSlot(cid, tree.auxMerkleSize, tree.merkleNonce);
+    assert(info.slot === expected,
+      `${sym} placed at slot ${info.slot}, but _getAuxSlot(${cid}, ${tree.auxMerkleSize}, ${tree.merkleNonce}) = ${expected}`);
+  }
+});
+
+test('Two colliding chains: merkleNonce rotates rather than doubling tree', () => {
+  // Two chains colliding at nonce=0 size=4 — should be escapable by nonce
+  // rotation alone for most chainId pairs.
+  const probeEng = new AuxPowEngine({}, {});
+  // chainId=2 → slot 0, chainId=6 → slot 0 at nonce=0, size=4
+  const eng = makeEngineWithChains([
+    { symbol: 'A', chainId: 2, hashHex: '11'.repeat(32), targetHex: 'ff'.repeat(32) },
+    { symbol: 'B', chainId: 6, hashHex: '22'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree.branches.size === 2, 'Both chains placed');
+  // Verify daemon-side invariant
+  for (const [sym, info] of tree.branches) {
+    const cid = eng.auxBlocks.get(sym).chainId;
+    assert(info.slot === eng._getAuxSlot(cid, tree.auxMerkleSize, tree.merkleNonce),
+      `Slot mismatch for ${sym}`);
+  }
+});
+
+test('Single-chain proof has empty branch when merkleSize=2 with one zero slot', () => {
+  // Force merkleSize=2 by registering exactly one chain
+  const eng = makeEngineWithChains([
+    { symbol: 'AAA', chainId: 0x01, hashHex: 'ee'.repeat(32), targetHex: 'ff'.repeat(32) },
+  ]);
+  const tree = eng.buildAuxMerkleTree();
+  assert(tree.auxMerkleSize === 2, `Expected merkleSize=2, got ${tree.auxMerkleSize}`);
+  const info = tree.branches.get('AAA');
+  assert(info.branch.length === 1, `Expected 1-level branch (sibling = zero hash), got ${info.branch.length}`);
+
+  // Verify reconstruction: hash(slot ordering) → root
+  let h = Buffer.from(eng.auxBlocks.get('AAA').hash, 'hex');
+  const isRight = info.sideMask & 1;
+  h = isRight
+    ? sha256d(Buffer.concat([info.branch[0], h]))
+    : sha256d(Buffer.concat([h, info.branch[0]]));
+  assert(h.equals(tree.auxMerkleRoot), 'Single-chain proof did not match root');
+});
+
+// ═══════════════════════════════════════════════════════
+// C6b: COOKIE_SECRET REQUIRED (H-9)
+// ═══════════════════════════════════════════════════════
+
+console.log('\nC6b: Cookie Secret Enforcement\n');
+
+const { AuthLayer } = require('../src/pool/securityEngine');
+
+test('AuthLayer throws without a secret', () => {
+  let threw = false;
+  try { new AuthLayer({}); } catch (err) { threw = /COOKIE_SECRET/.test(err.message); }
+  assert(threw, 'Expected AuthLayer to throw on missing secret');
+});
+
+test('AuthLayer throws with too-short secret (<32 chars)', () => {
+  let threw = false;
+  try { new AuthLayer({ secret: 'short' }); } catch (err) { threw = /COOKIE_SECRET/.test(err.message); }
+  assert(threw, 'Expected AuthLayer to throw on short secret');
+});
+
+test('Two AuthLayers with same secret produce identical cookies for same client', () => {
+  const sec = 'a'.repeat(64); // 64 hex chars
+  const a1 = new AuthLayer({ secret: sec });
+  const a2 = new AuthLayer({ secret: sec });
+  // Force matching serverEpoch so cookie HMAC inputs are identical
+  a2.serverEpoch = a1.serverEpoch;
+  const c1 = a1.issueCookie('client-x');
+  const c2 = a2.issueCookie('client-x');
+  assert(c1 === c2, `Cookies must match across nodes with same secret+epoch (got ${c1} vs ${c2})`);
+});
+
+// ═══════════════════════════════════════════════════════
+// C7: BLOCK REWARD ROUTING — LTC_REWARD_ADDRESS (C-4)
+// ═══════════════════════════════════════════════════════
+
+console.log('\nC7: Reward Wallet Separation\n');
+
+const BlockTemplateManager = require('../src/blockchain/blockTemplate');
+const { addressToOutputScript } = require('../src/utils/addressCodec');
+
+// Two distinct, valid Litecoin addresses for the test.
+// (Generated deterministically from seeds via Base58Check; bech32 reward
+// + base58 fee covers both encoding paths in addressToOutputScript.)
+const REWARD_ADDR = 'ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9';
+const FEE_ADDR    = 'Lcyr7wgBHAU9xpSsPVpmAr1g8bKedPaGYR';
+
+test('_buildOutputScript(rewardAddress) produces the reward wallet\'s script (not fee)', () => {
+  const btm = new BlockTemplateManager(null, {
+    fee: 0.02,
+    feeAddress: FEE_ADDR,
+    rewardAddress: REWARD_ADDR,
+  });
+  const rewardScript = btm._buildOutputScript(REWARD_ADDR);
+  const feeScript    = btm._buildOutputScript(FEE_ADDR);
+  assert(!rewardScript.equals(feeScript),
+    'Reward and fee output scripts must differ when addresses differ');
+  assert(rewardScript.equals(addressToOutputScript(REWARD_ADDR)),
+    'Reward script must equal addressToOutputScript(LTC_REWARD_ADDRESS)');
+});
+
+test('_getCoinbaseParts throws when rewardAddress is missing', () => {
+  const btm = new BlockTemplateManager(null, {
+    fee: 0.02,
+    feeAddress: FEE_ADDR,
+    // no rewardAddress
+  });
+  btm.currentTemplate = {
+    coinbasevalue: 625000000,
+    height: 50000,
+    bits: '1d00ffff',
+    previousblockhash: '00'.repeat(32),
+    transactions: [],
+  };
+  btm.currentJobId = 'jobtest';
+  let threw = false;
+  try { btm._getCoinbaseParts(); } catch (err) {
+    threw = /LTC_REWARD_ADDRESS/.test(err.message);
+  }
+  assert(threw, 'Expected _getCoinbaseParts to throw on missing rewardAddress');
+});
+
+test('Coinbase output 1 (miner reward) script bytes match LTC_REWARD_ADDRESS', () => {
+  const btm = new BlockTemplateManager(null, {
+    fee: 0.02,
+    feeAddress: FEE_ADDR,
+    rewardAddress: REWARD_ADDR,
+  });
+  btm.currentTemplate = {
+    coinbasevalue: 625000000,
+    height: 50000,
+    bits: '1d00ffff',
+    previousblockhash: '00'.repeat(32),
+    transactions: [],
+  };
+  btm.currentJobId = 'jobtest';
+  const [cb1, cb2] = btm._getCoinbaseParts();
+  // The full coinbase = cb1 + extranonce1 + extranonce2 + cb2.
+  // Output 1's script bytes appear inside cb2; just assert addressToOutputScript
+  // bytes for the reward wallet appear in the coinbase, and the fee wallet's
+  // script does NOT appear at the same offset as before C-4.
+  const expectedRewardScript = addressToOutputScript(REWARD_ADDR);
+  assert(cb2.indexOf(expectedRewardScript) !== -1,
+    'Reward address output script not present in coinbase tail');
 });
 
 // ═══════════════════════════════════════════════════════

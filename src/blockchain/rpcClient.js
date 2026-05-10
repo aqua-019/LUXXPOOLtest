@@ -152,17 +152,41 @@ class RpcClient {
     return this.call('getblocktemplate', [{ capabilities }]);
   }
 
-  /** Submit a solved block (retries on transient failure) */
+  /**
+   * Submit a solved block (retries on transient failure).
+   *
+   * Each attempt inherits the call()-level 30s socket timeout, but we also
+   * impose an absolute per-attempt 30s deadline here using AbortController.
+   * If the daemon hangs without sending data on an open socket, the inner
+   * timeout would still fire — but the AbortController ceiling is the
+   * stronger guarantee and emits a distinct BLOCK_RPC_TIMEOUT event so
+   * "block submission stuck" is visible in the dashboard.
+   */
   async submitBlock(blockHex) {
     const maxRetries = 3;
+    const SUBMIT_TIMEOUT_MS = 30_000;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), SUBMIT_TIMEOUT_MS);
       try {
-        return await this.call('submitblock', [blockHex]);
+        const racer = new Promise((_, reject) => {
+          ac.signal.addEventListener('abort', () => {
+            this.log.error({ attempt, ms: SUBMIT_TIMEOUT_MS }, 'BLOCK_RPC_TIMEOUT submitblock exceeded ceiling');
+            try {
+              poolLogger.emit('DAEMON_002', { chain: this._chainLabel(), rpc: 'submitblock', attempt });
+            } catch (_) { /* logger best-effort */ }
+            reject(new Error(`submitblock timed out after ${SUBMIT_TIMEOUT_MS}ms (attempt ${attempt})`));
+          }, { once: true });
+        });
+        const result = await Promise.race([this.call('submitblock', [blockHex]), racer]);
+        return result;
       } catch (err) {
         if (attempt === maxRetries) throw err;
         const delay = 100 * Math.pow(2, attempt - 1); // 100ms, 200ms, 400ms
         this.log.warn({ attempt, err: err.message }, `submitblock failed, retrying in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
+      } finally {
+        clearTimeout(timer);
       }
     }
   }
@@ -202,6 +226,16 @@ class RpcClient {
     return this.call('getrawtransaction', [txid, verbose]);
   }
 
+  /** Get wallet-known transaction (includes details, confirmations, etc.) */
+  async getTransaction(txid) {
+    return this.call('gettransaction', [txid, true]);
+  }
+
+  /** List recent wallet transactions (used for payment reconciliation) */
+  async listRecentTransactions(count = 200) {
+    return this.call('listtransactions', ['*', count, 0, true]);
+  }
+
   /** Validate address */
   async validateAddress(address) {
     return this.call('validateaddress', [address]);
@@ -217,9 +251,21 @@ class RpcClient {
     return this.call('sendtoaddress', [address, amount]);
   }
 
-  /** Send many (batch payouts) */
-  async sendMany(fromAccount, amounts) {
-    return this.call('sendmany', [fromAccount, amounts]);
+  /**
+   * Send many (batch payouts).
+   *
+   * @param {string} fromAccount - Litecoin account label (legacy; '' for default)
+   * @param {object} amounts     - { address: amount, ... } in LTC
+   * @param {number} [minconf=1] - Minimum confirmations on source UTXOs.
+   *        Default 1 prevents the wallet from spending UTXOs that haven't
+   *        even made it into a block yet (which can happen if a recent
+   *        block we mined is later orphaned). Litecoin Core ≥ 0.21
+   *        accepts the same positional arg for descriptor and legacy
+   *        wallets — see docs/engineering/DEPLOYMENT.md for the
+   *        wallet-compatibility note.
+   */
+  async sendMany(fromAccount, amounts, minconf = 1) {
+    return this.call('sendmany', [fromAccount, amounts, minconf]);
   }
 
   /** Create aux block (merged mining) */

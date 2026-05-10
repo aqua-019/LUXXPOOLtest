@@ -9,10 +9,11 @@ const config = {
   env: process.env.NODE_ENV || 'development',
 
   pool: {
-    name:       process.env.POOL_NAME || 'LUXXPOOL',
-    host:       process.env.POOL_HOST || 'luxxpool.io',
-    fee:        parseFloat(process.env.POOL_FEE || '0.02'),
-    feeAddress: process.env.POOL_FEE_ADDRESS,
+    name:          process.env.POOL_NAME || 'LUXXPOOL',
+    host:          process.env.POOL_HOST || 'luxxpool.io',
+    fee:           parseFloat(process.env.POOL_FEE || '0.02'),
+    feeAddress:    process.env.POOL_FEE_ADDRESS,
+    rewardAddress: process.env.LTC_REWARD_ADDRESS,
   },
 
   stratum: {
@@ -184,11 +185,26 @@ const config = {
 function validateConfig() {
   const errors = [];
 
+  const isLtcAddress = (a) =>
+    /^[LM3][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(a) || /^ltc1[a-z0-9]{39,59}$/.test(a);
+
+  // Pool reward wallet is required and must be distinct from the fee wallet —
+  // co-mingling rewards and fees on one key means a single compromise drains
+  // every block reward the pool has accumulated.
+  if (!config.pool.rewardAddress) {
+    errors.push('LTC_REWARD_ADDRESS is required (pool wallet for block rewards)');
+  } else if (!isLtcAddress(config.pool.rewardAddress)) {
+    errors.push('LTC_REWARD_ADDRESS is not a valid Litecoin address format');
+  }
+  if (config.pool.feeAddress && config.pool.rewardAddress &&
+      config.pool.feeAddress === config.pool.rewardAddress) {
+    errors.push('LTC_REWARD_ADDRESS and POOL_FEE_ADDRESS must be different wallets');
+  }
+
   if (config.pool.fee > 0) {
     if (!config.pool.feeAddress) {
       errors.push('POOL_FEE_ADDRESS required when POOL_FEE > 0');
-    } else if (!/^[LM3][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(config.pool.feeAddress)
-               && !/^ltc1[a-z0-9]{39,59}$/.test(config.pool.feeAddress)) {
+    } else if (!isLtcAddress(config.pool.feeAddress)) {
       errors.push('POOL_FEE_ADDRESS is not a valid Litecoin address format');
     }
   }
@@ -203,6 +219,9 @@ function validateConfig() {
   }
   if (config.api.adminToken && config.api.adminToken.length < 32) {
     errors.push('API_ADMIN_TOKEN must be at least 32 characters for security');
+  }
+  if (!process.env.COOKIE_SECRET || process.env.COOKIE_SECRET.length < 32) {
+    errors.push('COOKIE_SECRET must be set and at least 32 characters (generate with: openssl rand -hex 32)');
   }
 
   if (errors.length > 0) {
