@@ -547,12 +547,62 @@ test('VarDiff adjusts up for fast shares', () => {
 });
 
 // ═══════════════════════════════════════════════════════
+// D14: PPLNS QUERY MUST FILTER BY status='valid' (C-1)
+// ═══════════════════════════════════════════════════════
+
+const pplnsAsyncTests = [];
+pplnsAsyncTests.push(async () => {
+  const queries = [];
+  const spyDb = {
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      // Return synthetic rows that would only contain valid shares
+      return { rows: [{ address: 'Lvalid01aaaaaaaaaaaaaaaaaaaaaaaaaa', total_diff: '300' }] };
+    },
+  };
+  const spyRedis = {
+    get: async () => null, set: async () => 'OK', del: async () => 1,
+    incrbyfloat: async () => '0',
+    pipeline: () => ({ hincrby: () => {}, incr: () => {}, set: () => {}, exec: async () => [] }),
+  };
+  const spyPP = new PaymentProcessor(mockRpc, spyDb, spyRedis, {
+    pplnsWindow: 100, poolFee: 0.02, minPayout: 0.001, fleetAddresses: new Set(),
+  }, null);
+
+  await spyPP._calculatePPLNS({ height: 50000 });
+
+  const pplnsQ = queries.find(q => /SUM\s*\(\s*difficulty\s*\)/i.test(q.sql));
+  if (!pplnsQ) {
+    console.log('  ❌ PPLNS SQL not captured by spy');
+    failed++;
+    return;
+  }
+  if (!/AND\s+status\s*=\s*'valid'/i.test(pplnsQ.sql)) {
+    console.log(`  ❌ PPLNS query missing status='valid' filter: ${pplnsQ.sql}`);
+    failed++;
+    return;
+  }
+  console.log('  ✅ PPLNS query filters by status=\'valid\' (C-1)');
+  passed++;
+});
+
+// ═══════════════════════════════════════════════════════
 // RUN ASYNC TESTS + SUMMARY
 // ═══════════════════════════════════════════════════════
 
 (async () => {
   console.log('\nD9: Payment Retry (async)\n');
   for (const fn of asyncTests) {
+    try {
+      await fn();
+    } catch (err) {
+      console.log(`  ❌ Async test failed: ${err.message}`);
+      failed++;
+    }
+  }
+
+  console.log('\nD14: PPLNS Status Filter (async)\n');
+  for (const fn of pplnsAsyncTests) {
     try {
       await fn();
     } catch (err) {

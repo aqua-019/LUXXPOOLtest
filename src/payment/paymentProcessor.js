@@ -179,7 +179,7 @@ class PaymentProcessor extends EventEmitter {
       const result = await this.db.query(
         `SELECT address, SUM(difficulty) as total_diff
          FROM shares
-         WHERE height >= $1 AND height <= $2
+         WHERE height >= $1 AND height <= $2 AND status = 'valid'
          GROUP BY address`,
         [startHeight, block.height]
       );
