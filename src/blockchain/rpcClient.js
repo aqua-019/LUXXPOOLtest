@@ -202,6 +202,16 @@ class RpcClient {
     return this.call('getrawtransaction', [txid, verbose]);
   }
 
+  /** Get wallet-known transaction (includes details, confirmations, etc.) */
+  async getTransaction(txid) {
+    return this.call('gettransaction', [txid, true]);
+  }
+
+  /** List recent wallet transactions (used for payment reconciliation) */
+  async listRecentTransactions(count = 200) {
+    return this.call('listtransactions', ['*', count, 0, true]);
+  }
+
   /** Validate address */
   async validateAddress(address) {
     return this.call('validateaddress', [address]);

@@ -747,7 +747,7 @@ async function main() {
       },
       redisKeys
     );
-    ltcPayments.start();
+    await ltcPayments.start();
 
     if (Object.keys(auxRpcClients).length > 0) {
       const multiPay = new MultiCoinPaymentProcessor(

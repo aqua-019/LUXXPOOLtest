@@ -29,17 +29,109 @@ class PaymentProcessor extends EventEmitter {
   }
 
   /**
-   * Start the payment processing loop
+   * Start the payment processing loop.
+   * Reconciles any pending payments left over from a prior crash before
+   * scheduling the next cycle (closes the sendMany-returned-but-UPDATE-not-run
+   * orphan window).
    */
-  start() {
+  async start() {
     const intervalMs = (this.config.interval || 600) * 1000;
     log.info({
       interval: this.config.interval,
       minPayout: this.config.minPayout,
       scheme: this.config.scheme,
-    }, 'Payment processor started');
+    }, 'Payment processor starting...');
+
+    await this._reconcilePending();
 
     this.interval = setInterval(() => this.processPayments(), intervalMs);
+    log.info('Payment processor started');
+  }
+
+  /**
+   * Walk every `pending` payment row at startup and resolve its true state
+   * by querying the wallet's recent transaction history. If we find an
+   * on-chain TX matching the recipient set + amounts, mark sent. Otherwise
+   * mark failed for the next retry cycle.
+   *
+   * Closes the race where a crash between sendMany() returning a txid and
+   * the corresponding UPDATE 'sent' query orphans rows in 'pending' forever
+   * (the existing retry path only kicks `failed`, not `pending`).
+   */
+  async _reconcilePending() {
+    log.info('Reconciling pending payments at startup...');
+    let groups;
+    try {
+      const { rows } = await this.db.query(
+        `SELECT block_height, array_agg(id) as ids, array_agg(address) as addrs,
+                array_agg(amount) as amounts
+         FROM payments
+         WHERE status = 'pending' AND coin = 'LTC'
+         GROUP BY block_height
+         ORDER BY block_height ASC`
+      );
+      groups = rows;
+    } catch (err) {
+      log.error({ err: err.message }, 'Pending-payment query failed during reconcile — skipping');
+      return;
+    }
+
+    if (!groups || groups.length === 0) {
+      log.info('No pending payments to reconcile');
+      return;
+    }
+    log.warn({ groupCount: groups.length }, 'Found pending payment groups — reconciling');
+
+    let recent;
+    try {
+      recent = await this.rpc.listRecentTransactions(500);
+    } catch (err) {
+      log.error({ err: err.message },
+                'Could not list wallet transactions for reconciliation — marking pending → failed for retry');
+      await this.db.query(
+        `UPDATE payments SET status='failed' WHERE status='pending' AND coin='LTC'`
+      );
+      return;
+    }
+
+    for (const group of groups) {
+      const expectedAddrs = new Set(group.addrs);
+      const expectedAmounts = {};
+      for (let i = 0; i < group.addrs.length; i++) {
+        expectedAmounts[group.addrs[i]] = parseFloat(group.amounts[i]);
+      }
+
+      // Find a single txid that paid this exact recipient set
+      const candidates = {};
+      for (const tx of recent) {
+        if (tx.category !== 'send') continue;
+        if (!tx.txid || !expectedAddrs.has(tx.address)) continue;
+        const amt = Math.abs(parseFloat(tx.amount));
+        if (Math.abs(amt - expectedAmounts[tx.address]) < 1e-8) {
+          if (!candidates[tx.txid]) candidates[tx.txid] = new Set();
+          candidates[tx.txid].add(tx.address);
+        }
+      }
+      const matched = Object.entries(candidates)
+        .find(([, addrs]) => addrs.size === expectedAddrs.size);
+
+      if (matched) {
+        const [txid] = matched;
+        await this.db.query(
+          `UPDATE payments SET status='sent', txid=$1 WHERE id = ANY($2::int[])`,
+          [txid, group.ids]
+        );
+        log.info({ block_height: group.block_height, txid, count: group.ids.length },
+                 'Reconciled pending → sent');
+      } else {
+        await this.db.query(
+          `UPDATE payments SET status='failed' WHERE id = ANY($1::int[])`,
+          [group.ids]
+        );
+        log.warn({ block_height: group.block_height, count: group.ids.length },
+                 'Pending payment not found on-chain — marked failed for retry');
+      }
+    }
   }
 
   stop() {
